@@ -1,0 +1,34 @@
+{
+  "Random": {
+    "profit_mean": 600.3008305193226,
+    "profit_std": 26.463522896001358,
+    "profit_min": 573.7190587062986,
+    "profit_max": 680.683938253773,
+    "irrigation_mean": 236.9494865505995,
+    "yield_mean": 2771.7218635515756
+  },
+  "Farmer (10-day)": {
+    "profit_mean": 842.699124408675,
+    "profit_std": 52.13695372247369,
+    "profit_min": 758.8497558081905,
+    "profit_max": 948.0619487403707,
+    "irrigation_mean": 236.87047244974312,
+    "yield_mean": 3873.5179241212045
+  },
+  "Threshold (0.45)": {
+    "profit_mean": 871.7908667177888,
+    "profit_std": 54.17311484102435,
+    "profit_min": 780.5802882769422,
+    "profit_max": 996.5913756182651,
+    "irrigation_mean": 236.9494865505995,
+    "yield_mean": 4005.767482635513
+  },
+  "TSA-SAC (ours)": {
+    "profit_mean": 582.6124988930117,
+    "profit_std": 22.6545946105107,
+    "profit_min": 555.174837304549,
+    "profit_max": 654.442120464374,
+    "irrigation_mean": 236.9494865505995,
+    "yield_mean": 2691.320356159252
+  }
+}
