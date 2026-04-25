@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.amp import GradScaler, autocast
 from collections import deque
 import random
 
@@ -240,6 +241,7 @@ class SACAgent:
         buffer_size: int = 1_000_000,
         batch_size: int = 256,
         device: str = "cpu",
+        use_amp: bool = False,
     ):
         self.obs_dim    = obs_dim
         self.action_dim = action_dim
@@ -249,6 +251,8 @@ class SACAgent:
         self.batch_size = batch_size
         self.device     = torch.device(device)
         self.auto_alpha = auto_alpha
+        self.use_amp    = bool(use_amp and self.device.type == "cuda")
+        self.scaler     = GradScaler("cuda", enabled=self.use_amp)
 
         # ── Networks ──────────────────────────────────────────────────────────
         self.actor = BiLSTMGaussianPolicy(
@@ -317,30 +321,35 @@ class SACAgent:
 
         # Critic
         with torch.no_grad():
-            next_a, log_pi, _ = self.actor.sample(next_seqs)
-            q1_t, q2_t        = self.critic_target(next_seqs, next_a)
-            q_target = rewards + self.gamma * (1 - dones) * (
-                torch.min(q1_t, q2_t) - self.alpha * log_pi
-            )
+            with autocast(device_type=self.device.type, enabled=self.use_amp):
+                next_a, log_pi, _ = self.actor.sample(next_seqs)
+                q1_t, q2_t        = self.critic_target(next_seqs, next_a)
+                q_target = rewards + self.gamma * (1 - dones) * (
+                    torch.min(q1_t, q2_t) - self.alpha * log_pi
+                )
 
-        q1, q2      = self.critic(seqs, actions)
-        critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
         self.critic_optim.zero_grad()
-        critic_loss.backward()
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
+            q1, q2      = self.critic(seqs, actions)
+            critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
+        self.scaler.scale(critic_loss).backward()
+        self.scaler.unscale_(self.critic_optim)
         nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
-        self.critic_optim.step()
+        self.scaler.step(self.critic_optim)
 
         # Actor
-        new_a, log_pi, _ = self.actor.sample(seqs)
-        q1_new, q2_new   = self.critic(seqs, new_a)
-        actor_loss = (self.alpha * log_pi - torch.min(q1_new, q2_new)).mean()
         self.actor_optim.zero_grad()
-        actor_loss.backward()
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
+            new_a, log_pi, _ = self.actor.sample(seqs)
+            q1_new, q2_new   = self.critic(seqs, new_a)
+            actor_loss = (self.alpha * log_pi - torch.min(q1_new, q2_new)).mean()
+        self.scaler.scale(actor_loss).backward()
+        self.scaler.unscale_(self.actor_optim)
         nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-        self.actor_optim.step()
+        self.scaler.step(self.actor_optim)
 
         # Alpha
-        alpha_loss = torch.tensor(0.0)
+        alpha_loss = torch.tensor(0.0, device=self.device)
         if self.auto_alpha:
             alpha_loss = -(
                 self.log_alpha * (log_pi + self.target_entropy).detach()
@@ -349,6 +358,8 @@ class SACAgent:
             alpha_loss.backward()
             self.alpha_optim.step()
             self.alpha = self.log_alpha.exp().item()
+
+        self.scaler.update()
 
         # Soft target update
         for p, tp in zip(self.critic.parameters(), self.critic_target.parameters()):

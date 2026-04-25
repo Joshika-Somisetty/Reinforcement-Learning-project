@@ -124,6 +124,7 @@ def train(args):
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
         device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
+        use_amp=args.amp,
     )
 
     print(f"\n{'='*68}")
@@ -132,6 +133,7 @@ def train(args):
     print(f"  obs_dim={obs_dim} | seq_len={args.seq_len} | "
           f"lstm={args.lstm_hidden}x{args.lstm_layers}")
     print(f"  Device: {agent.device}")
+    print(f"  Mixed precision: {'on' if agent.use_amp else 'off'}")
     print(f"{'='*68}\n")
 
     history = {
@@ -293,18 +295,20 @@ def main():
     parser.add_argument("--climate",    default="arid", choices=["semi_arid","humid","arid"])
     parser.add_argument("--episodes",   default=1000,  type=int)
     parser.add_argument("--warmup",     default=10000, type=int)
-    parser.add_argument("--batch-size", default=256,  type=int)
+    parser.add_argument("--batch-size", default=64,  type=int)
     parser.add_argument("--buffer-size",default=1_000_000, type=int)
     parser.add_argument("--lr",         default=3e-4, type=float)
     parser.add_argument("--reservoir",  default=300.0,type=float)
     parser.add_argument("--eval-every", default=50,   type=int)
     parser.add_argument("--seq-len",    default=7,    type=int,
                         help="Days of observation history fed to BiLSTM")
-    parser.add_argument("--lstm-hidden",default=128,  type=int)
+    parser.add_argument("--lstm-hidden",default=64,  type=int)
     parser.add_argument("--lstm-layers",default=2,    type=int)
     parser.add_argument("--eval-only",  action="store_true")
     parser.add_argument("--model",      default="checkpoints/tsa_sac_best.pt")
     parser.add_argument("--cuda",       action="store_true")
+    parser.add_argument("--amp",        action="store_true",
+                        help="Enable mixed precision on CUDA to reduce GPU memory usage")
     args = parser.parse_args()
 
     if args.eval_only:
