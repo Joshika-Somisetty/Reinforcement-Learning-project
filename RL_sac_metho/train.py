@@ -235,8 +235,15 @@ def compare_baselines(args, agent=None):
     if agent is None:
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
-        agent = SACAgent(obs_dim=obs_dim, action_dim=action_dim,
-                         seq_len=args.seq_len)
+        agent = SACAgent(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            seq_len=args.seq_len,
+            lstm_hidden=args.lstm_hidden,
+            lstm_layers=args.lstm_layers,
+            device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
+            use_amp=args.amp,
+        )
         agent.load(args.model)
 
     policies = {
@@ -315,8 +322,15 @@ def main():
         env = CropIrrigationEnv(crop=args.crop, climate=args.climate)
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
-        agent = SACAgent(obs_dim=obs_dim, action_dim=action_dim,
-                         seq_len=args.seq_len)
+        agent = SACAgent(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            seq_len=args.seq_len,
+            lstm_hidden=args.lstm_hidden,
+            lstm_layers=args.lstm_layers,
+            device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
+            use_amp=args.amp,
+        )
         agent.load(args.model)
         compare_baselines(args, agent)
     else:
