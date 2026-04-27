@@ -105,6 +105,59 @@ class TemporalSpatialEncoder(nn.Module):
         return context * feature_weights                    # (B, H)
 
 
+class BiLSTMEncoder(nn.Module):
+    """BiLSTM encoder without attention for ablation experiments."""
+    def __init__(self, obs_dim: int, hidden_dim: int = 128,
+                 num_layers: int = 2, dropout: float = 0.2):
+        super().__init__()
+        self.bilstm = nn.LSTM(
+            input_size=obs_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.proj = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, seq: torch.Tensor) -> torch.Tensor:
+        hidden_seq, _ = self.bilstm(seq)
+        return self.proj(hidden_seq[:, -1, :])
+
+
+class MLPSequenceEncoder(nn.Module):
+    """Sequence-flattening encoder used as a simple SAC-style ablation baseline."""
+    def __init__(self, obs_dim: int, seq_len: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim * seq_len, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, seq: torch.Tensor) -> torch.Tensor:
+        flat = seq.reshape(seq.shape[0], -1)
+        return self.net(flat)
+
+
+def build_encoder(encoder_type: str, obs_dim: int, seq_len: int,
+                  hidden_dim: int, num_layers: int):
+    if encoder_type == "tsa":
+        return TemporalSpatialEncoder(obs_dim, hidden_dim, num_layers)
+    if encoder_type == "bilstm":
+        return BiLSTMEncoder(obs_dim, hidden_dim, num_layers)
+    if encoder_type == "mlp":
+        return MLPSequenceEncoder(obs_dim, seq_len, hidden_dim)
+    raise ValueError(f"Unknown encoder_type: {encoder_type}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MLP head
 # ──────────────────────────────────────────────────────────────────────────────
@@ -141,9 +194,11 @@ class BiLSTMGaussianPolicy(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int,
                  lstm_hidden: int = 128, lstm_layers: int = 2,
                  mlp_hidden=(256, 256),
-                 action_scale: float = 30.0, action_bias: float = 30.0):
+                 action_scale: float = 30.0, action_bias: float = 30.0,
+                 encoder_type: str = "tsa", seq_len: int = 7):
         super().__init__()
-        self.encoder       = TemporalSpatialEncoder(obs_dim, lstm_hidden, lstm_layers)
+        self.encoder_type  = encoder_type
+        self.encoder       = build_encoder(encoder_type, obs_dim, seq_len, lstm_hidden, lstm_layers)
         self.mlp           = MLP(lstm_hidden, mlp_hidden[-1], mlp_hidden[:-1])
         self.mean_layer    = nn.Linear(mlp_hidden[-1], action_dim)
         self.log_std_layer = nn.Linear(mlp_hidden[-1], action_dim)
@@ -194,11 +249,12 @@ class BiLSTMQNetwork(nn.Module):
     """
     def __init__(self, obs_dim: int, action_dim: int,
                  lstm_hidden: int = 128, lstm_layers: int = 2,
-                 mlp_hidden=(256, 256)):
+                 mlp_hidden=(256, 256), encoder_type: str = "tsa",
+                 seq_len: int = 7):
         super().__init__()
-        self.enc1 = TemporalSpatialEncoder(obs_dim, lstm_hidden, lstm_layers)
+        self.enc1 = build_encoder(encoder_type, obs_dim, seq_len, lstm_hidden, lstm_layers)
         self.q1   = MLP(lstm_hidden + action_dim, 1, mlp_hidden)
-        self.enc2 = TemporalSpatialEncoder(obs_dim, lstm_hidden, lstm_layers)
+        self.enc2 = build_encoder(encoder_type, obs_dim, seq_len, lstm_hidden, lstm_layers)
         self.q2   = MLP(lstm_hidden + action_dim, 1, mlp_hidden)
 
     def forward(self, seq: torch.Tensor, action: torch.Tensor):
@@ -242,6 +298,7 @@ class SACAgent:
         batch_size: int = 256,
         device: str = "cpu",
         use_amp: bool = False,
+        encoder_type: str = "tsa",
     ):
         self.obs_dim    = obs_dim
         self.action_dim = action_dim
@@ -253,18 +310,22 @@ class SACAgent:
         self.auto_alpha = auto_alpha
         self.use_amp    = bool(use_amp and self.device.type == "cuda")
         self.scaler     = GradScaler("cuda", enabled=self.use_amp)
+        self.encoder_type = encoder_type
 
         # ── Networks ──────────────────────────────────────────────────────────
         self.actor = BiLSTMGaussianPolicy(
-            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden
+            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden,
+            encoder_type=encoder_type, seq_len=seq_len
         ).to(self.device)
 
         self.critic = BiLSTMQNetwork(
-            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden
+            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden,
+            encoder_type=encoder_type, seq_len=seq_len
         ).to(self.device)
 
         self.critic_target = BiLSTMQNetwork(
-            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden
+            obs_dim, action_dim, lstm_hidden, lstm_layers, mlp_hidden,
+            encoder_type=encoder_type, seq_len=seq_len
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
@@ -380,6 +441,7 @@ class SACAgent:
             "critic":    self.critic.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu() if self.auto_alpha else None,
             "seq_len":   self.seq_len,
+            "encoder_type": self.encoder_type,
         }, path)
 
     def load(self, path: str):

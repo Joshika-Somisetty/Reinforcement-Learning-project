@@ -1,5 +1,6 @@
 """Plot training curves and policy comparison results for TSA-SAC."""
 
+import argparse
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,7 +17,7 @@ def smooth(arr, window=10):
     return np.convolve(arr, kernel, mode="valid")
 
 
-def plot_training(history_path="results/training_history.json"):
+def plot_training(history_path="results/training_history.json", show=True):
     with open(history_path) as f:
         h = json.load(f)
 
@@ -47,10 +48,13 @@ def plot_training(history_path="results/training_history.json"):
 
     plt.savefig("results/plots/training_curves.png", dpi=150, bbox_inches="tight")
     print("Saved: results/plots/training_curves.png")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
-def plot_comparison(comparison_path="results/baseline_comparison.json"):
+def plot_comparison(comparison_path="results/baseline_comparison.json", show=True):
     with open(comparison_path) as f:
         data = json.load(f)
 
@@ -108,10 +112,99 @@ def plot_comparison(comparison_path="results/baseline_comparison.json"):
     plt.tight_layout()
     plt.savefig("results/plots/policy_comparison.png", dpi=150, bbox_inches="tight")
     print("Saved: results/plots/policy_comparison.png")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
-def plot_episode_rollout(agent, seq_len=7, seed=999):
+def plot_irrigation_yield_tradeoff(history_path="results/training_history.json", show=True):
+    with open(history_path) as f:
+        h = json.load(f)
+
+    irrigation = np.array(h["irrigation"], dtype=float)
+    yield_kg = np.array(h["yield"], dtype=float)
+    episodes = np.array(h["episode"], dtype=float)
+
+    plt.figure(figsize=(8.5, 6.5))
+    sc = plt.scatter(
+        irrigation,
+        yield_kg,
+        c=episodes,
+        cmap="viridis",
+        alpha=0.65,
+        s=22,
+        edgecolors="none",
+    )
+    plt.xlabel("Total Irrigation (mm/season)")
+    plt.ylabel("Final Yield (kg/ha)")
+    plt.title("Irrigation vs Yield Trade-off")
+    plt.grid(True, alpha=0.25)
+
+    coeff = np.polyfit(irrigation, yield_kg, 1)
+    x_line = np.linspace(irrigation.min(), irrigation.max(), 100)
+    y_line = coeff[0] * x_line + coeff[1]
+    plt.plot(x_line, y_line, color="#DC2626", linewidth=2, label="Trend line")
+    plt.legend()
+
+    cbar = plt.colorbar(sc)
+    cbar.set_label("Episode")
+
+    plt.tight_layout()
+    plt.savefig("results/plots/irrigation_yield_tradeoff.png", dpi=150, bbox_inches="tight")
+    print("Saved: results/plots/irrigation_yield_tradeoff.png")
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+
+def plot_ablation_results(ablation_path="results/ablation/ablation_results.json", show=True):
+    with open(ablation_path) as f:
+        data = json.load(f)
+
+    names = list(data.keys())
+    profits = [data[n]["profit_mean"] for n in names]
+    yields = [data[n]["yield_mean"] for n in names]
+    iwues = [data[n]["iwue_mean"] for n in names]
+    stress = [data[n]["stress_days_mean"] for n in names]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.suptitle("Ablation Study", fontsize=13, fontweight="bold")
+    ax1, ax2, ax3, ax4 = axes.flatten()
+    colors = ["#94A3B8", "#60A5FA", "#F59E0B", "#16A34A"]
+
+    for ax, values, title, ylabel, fmt, offset in [
+        (ax1, profits, "Mean Season Profit", "Profit ($)", "{:.1f}", 4),
+        (ax2, yields, "Mean Final Yield", "kg/ha", "{:.0f}", 25),
+        (ax3, iwues, "Irrigation Water Use Efficiency", "kg/ha/mm", "{:.2f}", 0.04),
+        (ax4, stress, "Stress Days", "days/season", "{:.1f}", 0.15),
+    ]:
+        bars = ax.bar(names, values, color=colors, edgecolor="white", linewidth=1.2)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xticklabels(names, rotation=15, ha="right")
+        ax.grid(axis="y", alpha=0.3)
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + offset,
+                fmt.format(val),
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
+
+    plt.tight_layout()
+    plt.savefig("results/plots/ablation_study.png", dpi=150, bbox_inches="tight")
+    print("Saved: results/plots/ablation_study.png")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_episode_rollout(agent, seq_len=7, seed=999, show=True):
     """Visualise a single rollout for the sequence-based TSA-SAC agent."""
     from environment import CropIrrigationEnv
     from collections import deque
@@ -160,11 +253,29 @@ def plot_episode_rollout(agent, seq_len=7, seed=999):
     plt.tight_layout()
     plt.savefig("results/plots/episode_rollout.png", dpi=150, bbox_inches="tight")
     print("Saved: results/plots/episode_rollout.png")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 if __name__ == "__main__":
-    if Path("results/training_history.json").exists():
-        plot_training()
-    if Path("results/baseline_comparison.json").exists():
-        plot_comparison()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--plot", default="all",
+                        choices=["all", "training", "comparison", "tradeoff", "ablation"])
+    parser.add_argument("--history-path", default="results/training_history.json")
+    parser.add_argument("--comparison-path", default="results/baseline_comparison.json")
+    parser.add_argument("--ablation-path", default="results/ablation/ablation_results.json")
+    parser.add_argument("--no-show", action="store_true")
+    args = parser.parse_args()
+
+    show = not args.no_show
+
+    if args.plot in ["all", "training"] and Path(args.history_path).exists():
+        plot_training(args.history_path, show=show)
+    if args.plot in ["all", "tradeoff"] and Path(args.history_path).exists():
+        plot_irrigation_yield_tradeoff(args.history_path, show=show)
+    if args.plot in ["all", "comparison"] and Path(args.comparison_path).exists():
+        plot_comparison(args.comparison_path, show=show)
+    if args.plot in ["all", "ablation"] and Path(args.ablation_path).exists():
+        plot_ablation_results(args.ablation_path, show=show)

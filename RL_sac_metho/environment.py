@@ -90,6 +90,7 @@ class CropIrrigationEnv(gym.Env):
         crop: str = "cotton",
         reservoir_capacity_mm: float = 300.0,
         climate: str = "arid",    # "semi_arid" | "humid" | "arid"
+        dynamic_reward: bool = True,
         seed: Optional[int] = None,
         render_mode=None,
     ):
@@ -98,6 +99,7 @@ class CropIrrigationEnv(gym.Env):
         self.T = self.crop_params["season_days"]
         self.reservoir_cap = reservoir_capacity_mm
         self.climate = climate
+        self.dynamic_reward = dynamic_reward
         self.render_mode = render_mode
 
         # ── action / observation spaces ──────────────────────────────
@@ -333,7 +335,10 @@ class CropIrrigationEnv(gym.Env):
         self.leaf_area_index = np.clip(self.leaf_area_index, 0.05, cp["lai_max"])
 
         # ── 5. Reward (multi-objective) ───────────────────────────────
-        wy, ww, ws = self._dynamic_reward_weights()
+        if self.dynamic_reward:
+            wy, ww, ws = self._dynamic_reward_weights()
+        else:
+            wy, ww, ws = 1.0, 0.4, 1.5
         yield_gain = biomass_gain / 55.0
         water_cost = actual_irr / 60.0
         stress_penalty = (1.0 - ks) ** 2

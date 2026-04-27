@@ -12,6 +12,7 @@ import csv
 import json
 import time
 from collections import deque
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -91,26 +92,17 @@ def evaluate_policy(env, policy, n_episodes=30, deterministic=True,
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-def train(args):
-    Path("checkpoints").mkdir(exist_ok=True)
-    Path("results").mkdir(exist_ok=True)
-
-    env = CropIrrigationEnv(
+def build_env(args):
+    return CropIrrigationEnv(
         crop=args.crop,
         climate=args.climate,
         reservoir_capacity_mm=args.reservoir,
-    )
-    eval_env = CropIrrigationEnv(
-        crop=args.crop,
-        climate=args.climate,
-        reservoir_capacity_mm=args.reservoir,
+        dynamic_reward=not args.fixed_reward,
     )
 
-    obs_dim    = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
 
-    agent = SACAgent(
+def build_agent(args, obs_dim, action_dim):
+    return SACAgent(
         obs_dim=obs_dim,
         action_dim=action_dim,
         seq_len=args.seq_len,
@@ -125,13 +117,45 @@ def train(args):
         buffer_size=args.buffer_size,
         device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
         use_amp=args.amp,
+        encoder_type=args.encoder_type,
     )
+
+
+def variant_slug(label: str) -> str:
+    slug = label.lower().replace("+", "plus").replace("/", "_")
+    for ch in [" ", "(", ")", ".", "-", ","]:
+        slug = slug.replace(ch, "_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
+
+
+def run_name(args):
+    base = f"{args.encoder_type.upper()}"
+    reward_name = "fixed-reward" if args.fixed_reward else "dynamic-reward"
+    return f"{base} | seq={args.seq_len} | hidden={args.lstm_hidden} | {reward_name}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+def train(args):
+    Path("checkpoints").mkdir(exist_ok=True)
+    Path("results").mkdir(exist_ok=True)
+
+    env = build_env(args)
+    eval_env = build_env(args)
+
+    obs_dim    = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+
+    agent = build_agent(args, obs_dim, action_dim)
+    checkpoint_path = getattr(args, "checkpoint_path", "checkpoints/tsa_sac_best.pt")
+    history_path = getattr(args, "history_path", "results/training_history.json")
 
     print(f"\n{'='*68}")
     print("  TSA-SAC Irrigation Agent")
     print(f"  Crop: {args.crop.upper()} | Climate: {args.climate}")
-    print(f"  obs_dim={obs_dim} | seq_len={args.seq_len} | "
-          f"lstm={args.lstm_hidden}x{args.lstm_layers}")
+    print(f"  {run_name(args)}")
+    print(f"  obs_dim={obs_dim} | seq_len={args.seq_len} | lstm={args.lstm_hidden}x{args.lstm_layers}")
     print(f"  Device: {agent.device}")
     print(f"  Mixed precision: {'on' if agent.use_amp else 'off'}")
     print(f"{'='*68}\n")
@@ -215,10 +239,10 @@ def train(args):
             )
             if eval_result["profit_mean"] > best_profit:
                 best_profit = eval_result["profit_mean"]
-                agent.save("checkpoints/tsa_sac_best.pt")
+                agent.save(checkpoint_path)
                 print(f"  New best checkpoint saved: ${best_profit:.1f}")
 
-    with open("results/training_history.json", "w") as f:
+    with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
 
     print(f"\nTraining complete. Best eval profit: ${best_profit:.1f}")
@@ -227,23 +251,12 @@ def train(args):
 
 # ──────────────────────────────────────────────────────────────────────────────
 def compare_baselines(args, agent=None):
-    env = CropIrrigationEnv(
-        crop=args.crop, climate=args.climate,
-        reservoir_capacity_mm=args.reservoir,
-    )
+    env = build_env(args)
 
     if agent is None:
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
-        agent = SACAgent(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            seq_len=args.seq_len,
-            lstm_hidden=args.lstm_hidden,
-            lstm_layers=args.lstm_layers,
-            device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
-            use_amp=args.amp,
-        )
+        agent = build_agent(args, obs_dim, action_dim)
         agent.load(args.model)
 
     policies = {
@@ -295,6 +308,83 @@ def compare_baselines(args, agent=None):
     return results
 
 
+def run_ablation(args):
+    Path("results/ablation").mkdir(parents=True, exist_ok=True)
+    Path("checkpoints/ablation").mkdir(parents=True, exist_ok=True)
+
+    variants = [
+        ("SAC-MLP", {"encoder_type": "mlp", "seq_len": 1, "fixed_reward": True}),
+        ("SAC-BiLSTM", {"encoder_type": "bilstm", "seq_len": args.seq_len, "fixed_reward": True}),
+        ("TSA-SAC w/o DynReward", {"encoder_type": "tsa", "seq_len": args.seq_len, "fixed_reward": True}),
+        ("TSA-SAC Full", {"encoder_type": "tsa", "seq_len": args.seq_len, "fixed_reward": False}),
+    ]
+
+    results = {}
+    for label, overrides in variants:
+        variant_args = deepcopy(args)
+        variant_args.episodes = args.ablation_episodes
+        variant_args.warmup = args.ablation_warmup
+        variant_args.eval_every = args.ablation_eval_every
+        for key, value in overrides.items():
+            setattr(variant_args, key, value)
+
+        slug = variant_slug(label)
+        variant_args.checkpoint_path = f"checkpoints/ablation/{slug}.pt"
+        variant_args.history_path = f"results/ablation/{slug}_training_history.json"
+
+        print(f"\n{'#'*76}")
+        print(f"Running ablation variant: {label}")
+        print(f"{'#'*76}\n")
+
+        agent, _ = train(variant_args)
+        eval_env = build_env(variant_args)
+        metrics = evaluate_policy(
+            eval_env,
+            agent,
+            n_episodes=args.ablation_eval_episodes,
+            seed_start=4000,
+            seq_len=variant_args.seq_len,
+        )
+        metrics["encoder_type"] = variant_args.encoder_type
+        metrics["dynamic_reward"] = not variant_args.fixed_reward
+        metrics["seq_len"] = variant_args.seq_len
+        metrics["lstm_hidden"] = variant_args.lstm_hidden
+        results[label] = metrics
+
+    json_path = "results/ablation/ablation_results.json"
+    csv_path = "results/ablation/ablation_results.csv"
+    with open(json_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    metric_order = [
+        "profit_mean", "profit_std", "yield_mean", "yield_std",
+        "irrigation_mean", "iwue_mean", "wue_mean", "stress_days_mean",
+        "encoder_type", "dynamic_reward", "seq_len", "lstm_hidden",
+    ]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["variant", *metric_order])
+        for name, metrics in results.items():
+            writer.writerow([name] + [metrics.get(k, "") for k in metric_order])
+
+    print("\nAblation summary")
+    print("=" * 88)
+    print(f"{'Variant':<24} {'Profit':>10} {'Yield':>10} {'IWUE':>8} {'Stress':>8}")
+    print("-" * 88)
+    for name, metrics in results.items():
+        print(
+            f"{name:<24} "
+            f"{metrics['profit_mean']:>10.1f} "
+            f"{metrics['yield_mean']:>10.0f} "
+            f"{metrics['iwue_mean']:>8.2f} "
+            f"{metrics['stress_days_mean']:>8.1f}"
+        )
+    print("=" * 88)
+    print(f"Saved: {json_path}")
+    print(f"Saved: {csv_path}")
+    return results
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
@@ -311,26 +401,28 @@ def main():
                         help="Days of observation history fed to BiLSTM")
     parser.add_argument("--lstm-hidden",default=64,  type=int)
     parser.add_argument("--lstm-layers",default=2,    type=int)
+    parser.add_argument("--encoder-type", default="tsa", choices=["tsa", "bilstm", "mlp"])
+    parser.add_argument("--fixed-reward", action="store_true",
+                        help="Use a fixed reward weighting instead of the stage-aware dynamic reward")
     parser.add_argument("--eval-only",  action="store_true")
     parser.add_argument("--model",      default="checkpoints/tsa_sac_best.pt")
     parser.add_argument("--cuda",       action="store_true")
     parser.add_argument("--amp",        action="store_true",
                         help="Enable mixed precision on CUDA to reduce GPU memory usage")
+    parser.add_argument("--run-ablation", action="store_true")
+    parser.add_argument("--ablation-episodes", default=120, type=int)
+    parser.add_argument("--ablation-warmup", default=1000, type=int)
+    parser.add_argument("--ablation-eval-every", default=30, type=int)
+    parser.add_argument("--ablation-eval-episodes", default=12, type=int)
     args = parser.parse_args()
 
-    if args.eval_only:
+    if args.run_ablation:
+        run_ablation(args)
+    elif args.eval_only:
         env = CropIrrigationEnv(crop=args.crop, climate=args.climate)
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
-        agent = SACAgent(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            seq_len=args.seq_len,
-            lstm_hidden=args.lstm_hidden,
-            lstm_layers=args.lstm_layers,
-            device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
-            use_amp=args.amp,
-        )
+        agent = build_agent(args, obs_dim, action_dim)
         agent.load(args.model)
         compare_baselines(args, agent)
     else:
