@@ -154,6 +154,64 @@ def plot_comparison(comparison_path="results/baseline_comparison.json", show=Tru
         plt.close(fig)
 
 
+def plot_robustness(comparison_path="results/baseline_comparison.json", show=True):
+    """Plot policy robustness using mean +/- std across evaluation episodes."""
+    with open(comparison_path) as f:
+        data = json.load(f)
+
+    names = list(data.keys())
+    colors = ["#94A3B8", "#94A3B8", "#94A3B8", "#16A34A"]
+
+    metrics = [
+        ("profit_mean", "profit_std", "Profit Robustness", "Profit ($)"),
+        ("yield_mean", "yield_std", "Yield Robustness", "kg/ha"),
+        ("iwue_mean", "iwue_std", "IWUE Robustness", "kg/ha/mm"),
+        ("stress_days_mean", "stress_days_std", "Stress-Day Robustness", "days/season"),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.suptitle("Robustness Across Evaluation Episodes", fontsize=13, fontweight="bold")
+
+    for ax, (mean_key, std_key, title, ylabel) in zip(axes.flatten(), metrics):
+        means = [data[n][mean_key] for n in names]
+        stds = [data[n][std_key] for n in names]
+        x = np.arange(len(names))
+        bars = ax.bar(
+            x,
+            means,
+            yerr=stds,
+            capsize=5,
+            color=colors,
+            edgecolor="white",
+            linewidth=1.2,
+        )
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=15, ha="right")
+        ax.grid(axis="y", alpha=0.3)
+
+        ymax = max(means) if means else 0.0
+        offset = 0.03 * ymax if ymax > 0 else 0.1
+        for bar, mean, std in zip(bars, means, stds):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + std + offset,
+                f"{mean:.1f}±{std:.1f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+
+    plt.tight_layout()
+    plt.savefig("results/plots/robustness_analysis.png", dpi=150, bbox_inches="tight")
+    print("Saved: results/plots/robustness_analysis.png")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def plot_irrigation_yield_tradeoff(history_path="results/training_history.json", show=True):
     with open(history_path) as f:
         h = json.load(f)
@@ -298,7 +356,7 @@ def plot_episode_rollout(agent, seq_len=7, seed=999, show=True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--plot", default="all",
-                        choices=["all", "training", "agent", "comparison", "tradeoff", "ablation"])
+                        choices=["all", "training", "agent", "comparison", "robustness", "tradeoff", "ablation"])
     parser.add_argument("--history-path", default="results/training_history.json")
     parser.add_argument("--comparison-path", default="results/baseline_comparison.json")
     parser.add_argument("--ablation-path", default="results/ablation/ablation_results.json")
@@ -315,5 +373,7 @@ if __name__ == "__main__":
         plot_irrigation_yield_tradeoff(args.history_path, show=show)
     if args.plot in ["all", "comparison"] and Path(args.comparison_path).exists():
         plot_comparison(args.comparison_path, show=show)
+    if args.plot in ["all", "robustness"] and Path(args.comparison_path).exists():
+        plot_robustness(args.comparison_path, show=show)
     if args.plot in ["all", "ablation"] and Path(args.ablation_path).exists():
         plot_ablation_results(args.ablation_path, show=show)
