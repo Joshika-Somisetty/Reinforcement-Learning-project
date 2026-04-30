@@ -54,6 +54,42 @@ def plot_training(history_path="results/training_history.json", show=True):
         plt.close(fig)
 
 
+def plot_agent_metrics(history_path="results/training_history.json", show=True):
+    """Plot RL-agent centric training metrics."""
+    with open(history_path) as f:
+        h = json.load(f)
+
+    fig = plt.figure(figsize=(12, 8))
+    fig.suptitle("TSA-SAC Agent Metrics", fontsize=14, fontweight="bold")
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.30)
+
+    eps = h["episode"]
+
+    def ax_plot(pos, y_key, title, ylabel, color):
+        ax = fig.add_subplot(gs[pos])
+        raw = np.array(h[y_key])
+        ax.plot(eps, raw, alpha=0.25, color=color, linewidth=0.8)
+        s = smooth(raw)
+        ax.plot(eps[len(eps)-len(s):], s, color=color, linewidth=2)
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("Episode")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+        return ax
+
+    ax_plot((0, 0), "reward", "Episode Reward", "Reward", "#2563EB")
+    ax_plot((0, 1), "critic_loss", "Critic Loss", "MSE Loss", "#DC2626")
+    ax_plot((1, 0), "actor_loss", "Actor Loss", "Loss", "#7C3AED")
+    ax_plot((1, 1), "alpha", "Entropy Temperature", "alpha", "#0891B2")
+
+    plt.savefig("results/plots/agent_metrics.png", dpi=150, bbox_inches="tight")
+    print("Saved: results/plots/agent_metrics.png")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def plot_comparison(comparison_path="results/baseline_comparison.json", show=True):
     with open(comparison_path) as f:
         data = json.load(f)
@@ -262,7 +298,7 @@ def plot_episode_rollout(agent, seq_len=7, seed=999, show=True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--plot", default="all",
-                        choices=["all", "training", "comparison", "tradeoff", "ablation"])
+                        choices=["all", "training", "agent", "comparison", "tradeoff", "ablation"])
     parser.add_argument("--history-path", default="results/training_history.json")
     parser.add_argument("--comparison-path", default="results/baseline_comparison.json")
     parser.add_argument("--ablation-path", default="results/ablation/ablation_results.json")
@@ -273,6 +309,8 @@ if __name__ == "__main__":
 
     if args.plot in ["all", "training"] and Path(args.history_path).exists():
         plot_training(args.history_path, show=show)
+    if args.plot in ["all", "agent"] and Path(args.history_path).exists():
+        plot_agent_metrics(args.history_path, show=show)
     if args.plot in ["all", "tradeoff"] and Path(args.history_path).exists():
         plot_irrigation_yield_tradeoff(args.history_path, show=show)
     if args.plot in ["all", "comparison"] and Path(args.comparison_path).exists():
