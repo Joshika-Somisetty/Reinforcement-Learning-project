@@ -99,6 +99,7 @@ def build_env(args, seed_override=None):
         climate=args.climate,
         reservoir_capacity_mm=args.reservoir,
         dynamic_reward=not args.fixed_reward,
+        terminal_reward_scale=getattr(args, "terminal_reward_scale", 100.0),
         seed=args.seed if seed_override is None else seed_override,
     )
 
@@ -147,6 +148,37 @@ def set_global_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def apply_checkpoint_overrides(args, model_path):
+    """Use saved architecture metadata when evaluating a current-code checkpoint."""
+    path = Path(model_path)
+    if not path.exists():
+        return
+
+    ckpt = torch.load(path, map_location="cpu")
+    key_map = {
+        "seq_len": "seq_len",
+        "encoder_type": "encoder_type",
+        "lstm_hidden": "lstm_hidden",
+        "lstm_layers": "lstm_layers",
+        "critic_loss_type": "critic_loss",
+        "alpha_min": "alpha_min",
+        "alpha_max": "alpha_max",
+    }
+    changed = []
+    for ckpt_key, arg_key in key_map.items():
+        if ckpt_key not in ckpt:
+            continue
+        saved = ckpt[ckpt_key]
+        if saved is None:
+            continue
+        if getattr(args, arg_key) != saved:
+            setattr(args, arg_key, saved)
+            changed.append(f"{arg_key}={saved}")
+
+    if changed:
+        print("Loaded checkpoint settings: " + ", ".join(changed))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -407,11 +439,13 @@ def main():
     parser.add_argument("--climate",    default="arid", choices=["semi_arid","humid","arid"])
     parser.add_argument("--seed",       default=42, type=int)
     parser.add_argument("--episodes",   default=1000,  type=int)
-    parser.add_argument("--warmup",     default=5000, type=int)
-    parser.add_argument("--batch-size", default=64,  type=int)
+    parser.add_argument("--warmup",     default=10000, type=int)
+    parser.add_argument("--batch-size", default=256,  type=int)
     parser.add_argument("--buffer-size",default=1_000_000, type=int)
     parser.add_argument("--lr",         default=1e-4, type=float)
     parser.add_argument("--reservoir",  default=800.0,type=float)
+    parser.add_argument("--terminal-reward-scale", default=100.0, type=float,
+                        help="Scale terminal profit before adding it to the RL reward")
     parser.add_argument("--eval-every", default=50,   type=int)
     parser.add_argument("--eval-episodes", default=20, type=int)
     parser.add_argument("--compare-episodes", default=30, type=int)
@@ -421,7 +455,7 @@ def main():
                         help="Number of gradient updates per update event")
     parser.add_argument("--seq-len",    default=7,    type=int,
                         help="Days of observation history fed to BiLSTM")
-    parser.add_argument("--lstm-hidden",default=64,  type=int)
+    parser.add_argument("--lstm-hidden",default=128,  type=int)
     parser.add_argument("--lstm-layers",default=2,    type=int)
     parser.add_argument("--encoder-type", default="tsa", choices=["tsa", "bilstm", "mlp"])
     parser.add_argument("--fixed-reward", action="store_true",
@@ -447,6 +481,7 @@ def main():
         run_ablation(args)
     elif args.eval_only:
         set_global_seed(args.seed)
+        apply_checkpoint_overrides(args, args.model)
         env = build_env(args, seed_override=args.seed + 303)
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]

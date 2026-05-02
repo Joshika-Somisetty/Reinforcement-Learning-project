@@ -315,6 +315,9 @@ class SACAgent:
         self.use_amp    = bool(use_amp and self.device.type == "cuda")
         self.scaler     = GradScaler("cuda", enabled=self.use_amp)
         self.encoder_type = encoder_type
+        self.lstm_hidden = lstm_hidden
+        self.lstm_layers = lstm_layers
+        self.mlp_hidden = tuple(mlp_hidden)
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
         self.critic_loss_type = critic_loss_type
@@ -343,11 +346,14 @@ class SACAgent:
         # ── Entropy temperature ───────────────────────────────────────────────
         self.target_entropy = -float(action_dim)
         if auto_alpha:
-            self.log_alpha   = torch.zeros(1, requires_grad=True, device=self.device)
+            initial_alpha = float(np.clip(alpha, self.alpha_min, self.alpha_max))
+            self.log_alpha   = torch.tensor(
+                [math.log(initial_alpha)], requires_grad=True, device=self.device
+            )
             self.alpha       = self.log_alpha.exp().item()
             self.alpha_optim = optim.Adam([self.log_alpha], lr=lr)
         else:
-            self.alpha = alpha
+            self.alpha = float(np.clip(alpha, self.alpha_min, self.alpha_max))
 
         self.buffer        = SequenceReplayBuffer(buffer_size)
         self._update_count = 0
@@ -454,10 +460,38 @@ class SACAgent:
             "log_alpha": self.log_alpha.detach().cpu() if self.auto_alpha else None,
             "seq_len":   self.seq_len,
             "encoder_type": self.encoder_type,
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "lstm_hidden": self.lstm_hidden,
+            "lstm_layers": self.lstm_layers,
+            "mlp_hidden": self.mlp_hidden,
+            "alpha": self.alpha,
+            "alpha_min": self.alpha_min,
+            "alpha_max": self.alpha_max,
+            "critic_loss_type": self.critic_loss_type,
         }, path)
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device)
+        expected = {
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "seq_len": self.seq_len,
+            "encoder_type": self.encoder_type,
+            "lstm_hidden": self.lstm_hidden,
+            "lstm_layers": self.lstm_layers,
+        }
+        mismatches = []
+        for key, value in expected.items():
+            saved = ckpt.get(key)
+            if saved is not None and saved != value:
+                mismatches.append(f"{key}: checkpoint={saved}, current={value}")
+        if mismatches:
+            details = "; ".join(mismatches)
+            raise ValueError(
+                f"Checkpoint architecture does not match this agent ({details}). "
+                "Use the matching CLI settings or retrain with the current code."
+            )
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
         self.critic_target.load_state_dict(ckpt["critic"])

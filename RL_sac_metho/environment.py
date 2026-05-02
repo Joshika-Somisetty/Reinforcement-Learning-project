@@ -4,7 +4,7 @@ Crop irrigation environment used to approximate the TSA-SAC paper setup.
 This is still a custom Gymnasium environment rather than a DSSAT wrapper, but
 it now mirrors the paper more closely:
   - stage-aware reward weights
-  - forecast-aware preprocessed state with one-hot growth stage
+  - forecast-aware preprocessed state with reservoir awareness
   - continuous irrigation action in [0, 60] mm
   - soil / crop / weather variables that proxy the paper's DSSAT features
 """
@@ -61,6 +61,7 @@ STATE_KEYS = [
     "biomass_norm",
     "root_depth_norm",
     "soil_water_avail_norm",
+    "reservoir_norm",
     "water_stress_norm",
     "et0_norm",
     "rain_norm",
@@ -93,6 +94,7 @@ class CropIrrigationEnv(gym.Env):
         reservoir_capacity_mm: float = 800.0,
         climate: str = "arid",    # "semi_arid" | "humid" | "arid"
         dynamic_reward: bool = True,
+        terminal_reward_scale: float = 100.0,
         seed: Optional[int] = None,
         render_mode=None,
     ):
@@ -102,6 +104,7 @@ class CropIrrigationEnv(gym.Env):
         self.reservoir_cap = reservoir_capacity_mm
         self.climate = climate
         self.dynamic_reward = dynamic_reward
+        self.terminal_reward_scale = max(float(terminal_reward_scale), 1e-6)
         self.render_mode = render_mode
 
         # ── action / observation spaces ──────────────────────────────
@@ -305,6 +308,7 @@ class CropIrrigationEnv(gym.Env):
             np.clip(self.biomass / cp["max_yield_kg"], 0, 1),
             np.clip(root_depth_mm / cp["root_depth_mm"], 0, 1),
             np.clip(available / max(taw, 1e-6), 0, 1),
+            np.clip(self.reservoir / max(self.reservoir_cap, 1e-6), 0, 1),
             np.clip(1.0 - self._water_stress(), 0, 1),
             np.clip(self._et0(self.temps[day], self.solar_rad[day], self.wind[day]) / 12.0, 0, 1),
             np.clip(self.rainfall[day] / 30.0, 0, 1),
@@ -394,8 +398,8 @@ class CropIrrigationEnv(gym.Env):
             final_yield = bm_factor * cp["max_yield_kg"]
             gross = final_yield * cp["price_per_kg"]
             total_water_cost = self.cumulative_irrigation * cp["water_cost_per_mm"]
-            terminal_reward = gross - total_water_cost
-            self.episode_profit = terminal_reward
+            self.episode_profit = gross - total_water_cost
+            terminal_reward = self.episode_profit / self.terminal_reward_scale
 
         reward = daily_reward + terminal_reward
         obs = self._get_obs()
@@ -426,6 +430,7 @@ class CropIrrigationEnv(gym.Env):
             info["total_rainfall_mm"] = self.cumulative_rainfall
             info["total_water_input_mm"] = self.cumulative_irrigation + self.cumulative_rainfall
             info["stress_days"] = self.stress_days
+            info["terminal_reward_scaled"] = terminal_reward
 
         return obs, reward, terminated, False, info
 

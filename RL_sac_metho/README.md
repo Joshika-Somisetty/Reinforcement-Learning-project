@@ -35,7 +35,7 @@ Key ideas adopted:
 │  │  (Markov)    │  │  (FAO-56)     │  │  (RUE)   │ │
 │  └──────────────┘  └───────────────┘  └──────────┘ │
 │         ↓                  ↓                ↓       │
-│              10-dim observation vector              │
+│              15-dim observation vector              │
 └─────────────────────────────────────────────────────┘
                          ↕
 ┌─────────────────────────────────────────────────────┐
@@ -44,7 +44,7 @@ Key ideas adopted:
 │  │  Gaussian Actor  │   │  Twin Q-Networks        │ │
 │  │  (256-256 MLP)   │   │  (256-256 MLP × 2)      │ │
 │  │  → continuous    │   │  + target networks      │ │
-│  │    action [0,50] │   │                         │ │
+│  │    action [0,60] │   │                         │ │
 │  └──────────────────┘   └─────────────────────────┘ │
 │         Auto-tuned entropy temperature (α)          │
 └─────────────────────────────────────────────────────┘
@@ -54,17 +54,20 @@ Key ideas adopted:
 
 ## RL Formulation
 
-### State Space (12-dimensional)
+### State Space (15-dimensional)
 | Index | Variable | Description |
 |---|---|---|
 | 0 | `lai_norm` | Leaf area index proxy [0,1] |
 | 1 | `biomass_norm` | Accumulated biomass / max [0,1] |
-| 2 | `root_depth_norm` | Effective root depth / 1500 mm |
+| 2 | `root_depth_norm` | Effective root depth / crop maximum [0,1] |
 | 3 | `soil_water_avail_norm` | Available root-zone water [0,1] |
-| 4 | `water_stress_norm` | Stress factor proxy [0,1] |
-| 5 | `et0_norm` | Reference ET / 12 mm |
-| 6 | `rain_norm` | Rainfall today / 30 mm |
-| 7-11 | `stage_*` | One-hot critical growth stage indicators |
+| 4 | `reservoir_norm` | Remaining seasonal irrigation supply [0,1] |
+| 5 | `water_stress_norm` | Stress factor proxy [0,1] |
+| 6 | `et0_norm` | Reference ET / 12 mm |
+| 7 | `rain_norm` | Rainfall today / 30 mm |
+| 8 | `rain_forecast_3d_norm` | Noisy 3-day rainfall forecast [0,1] |
+| 9 | `et0_forecast_3d_norm` | Noisy 3-day ET0 forecast [0,1] |
+| 10-14 | `stage_*` | One-hot critical growth stage indicators |
 
 ### Action Space
 - **Continuous**: irrigation depth in mm ∈ [0, 60] per day
@@ -72,7 +75,7 @@ Key ideas adopted:
 ### Reward (Stage-Aware Multi-Objective)
 ``` 
 Daily:    r_t = w_y * yield_gain − w_w * irrigation_cost − w_s * stress_penalty
-Terminal: r_T = yield_revenue − total_water_cost
+Terminal: r_T = (yield_revenue - total_water_cost) / terminal_reward_scale
 ```
 
 ### Algorithm: TSA-SAC Style Soft Actor-Critic
@@ -107,17 +110,20 @@ Ks       = water stress coefficient (1 = no stress)
 # Install dependencies
 pip install -r requirements.txt
 
+# CUDA smoke test
+python train.py --episodes 20 --warmup 500 --eval-every 5 --eval-episodes 3 --compare-episodes 3 --cuda --amp --checkpoint-path checkpoints/gpu_test.pt --history-path results/gpu_test_history.json
+
 # Train TSA-SAC style agent (cotton, arid, 1000 episodes)
-python train.py --crop cotton --climate arid --episodes 1000
+python train.py --crop cotton --climate arid --episodes 1000 --cuda --amp
 
 # Train on maize in arid conditions
 python train.py --crop maize --climate arid --episodes 500
 
 # Evaluate saved model and compare baselines
-python train.py --eval-only --model checkpoints/tsa_sac_best.pt
+python train.py --eval-only --model checkpoints/tsa_sac_improved_best.pt --cuda --amp
 
-# Plot training curves and comparisons
-python visualize.py
+# Plot training curves, comparisons, and agent metrics
+python visualize.py --no-show
 ```
 
 ---
