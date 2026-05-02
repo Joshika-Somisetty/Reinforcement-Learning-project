@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import math
 from torch.amp import GradScaler, autocast
 from collections import deque
 import random
@@ -299,6 +300,9 @@ class SACAgent:
         device: str = "cpu",
         use_amp: bool = False,
         encoder_type: str = "tsa",
+        alpha_min: float = 0.02,
+        alpha_max: float = 0.5,
+        critic_loss_type: str = "huber",
     ):
         self.obs_dim    = obs_dim
         self.action_dim = action_dim
@@ -311,6 +315,9 @@ class SACAgent:
         self.use_amp    = bool(use_amp and self.device.type == "cuda")
         self.scaler     = GradScaler("cuda", enabled=self.use_amp)
         self.encoder_type = encoder_type
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
+        self.critic_loss_type = critic_loss_type
 
         # ── Networks ──────────────────────────────────────────────────────────
         self.actor = BiLSTMGaussianPolicy(
@@ -392,7 +399,10 @@ class SACAgent:
         self.critic_optim.zero_grad()
         with autocast(device_type=self.device.type, enabled=self.use_amp):
             q1, q2      = self.critic(seqs, actions)
-            critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
+            if self.critic_loss_type == "huber":
+                critic_loss = F.smooth_l1_loss(q1, q_target) + F.smooth_l1_loss(q2, q_target)
+            else:
+                critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
         self.scaler.scale(critic_loss).backward()
         self.scaler.unscale_(self.critic_optim)
         nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
@@ -418,6 +428,8 @@ class SACAgent:
             self.alpha_optim.zero_grad()
             alpha_loss.backward()
             self.alpha_optim.step()
+            with torch.no_grad():
+                self.log_alpha.clamp_(math.log(self.alpha_min), math.log(self.alpha_max))
             self.alpha = self.log_alpha.exp().item()
 
         self.scaler.update()

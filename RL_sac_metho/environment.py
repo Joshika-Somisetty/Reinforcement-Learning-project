@@ -4,7 +4,7 @@ Crop irrigation environment used to approximate the TSA-SAC paper setup.
 This is still a custom Gymnasium environment rather than a DSSAT wrapper, but
 it now mirrors the paper more closely:
   - stage-aware reward weights
-  - 12-dim preprocessed state with one-hot growth stage
+  - forecast-aware preprocessed state with one-hot growth stage
   - continuous irrigation action in [0, 60] mm
   - soil / crop / weather variables that proxy the paper's DSSAT features
 """
@@ -27,7 +27,7 @@ CROP_PROFILES = {
         wp=0.15,
         root_depth_mm=1200,
         price_per_kg=0.22,
-        water_cost_per_mm=0.04,
+        water_cost_per_mm=0.12,
         base_temp_c=14.0,
         lai_max=5.5,
     ),
@@ -39,7 +39,7 @@ CROP_PROFILES = {
         wp=0.12,                    # wilting point
         root_depth_mm=600,          # effective rooting depth
         price_per_kg=0.25,          # USD / kg
-        water_cost_per_mm=0.05,     # USD / mm applied
+        water_cost_per_mm=0.10,     # USD / mm applied
         base_temp_c=5.0,
         lai_max=6.0,
     ),
@@ -50,7 +50,7 @@ CROP_PROFILES = {
         fc=0.32, wp=0.11,
         root_depth_mm=700,
         price_per_kg=0.18,
-        water_cost_per_mm=0.05,
+        water_cost_per_mm=0.10,
         base_temp_c=10.0,
         lai_max=6.5,
     ),
@@ -64,6 +64,8 @@ STATE_KEYS = [
     "water_stress_norm",
     "et0_norm",
     "rain_norm",
+    "rain_forecast_3d_norm",
+    "et0_forecast_3d_norm",
     "stage_emergence",
     "stage_vegetative",
     "stage_reproductive",
@@ -88,7 +90,7 @@ class CropIrrigationEnv(gym.Env):
     def __init__(
         self,
         crop: str = "cotton",
-        reservoir_capacity_mm: float = 300.0,
+        reservoir_capacity_mm: float = 800.0,
         climate: str = "arid",    # "semi_arid" | "humid" | "arid"
         dynamic_reward: bool = True,
         seed: Optional[int] = None,
@@ -133,8 +135,9 @@ class CropIrrigationEnv(gym.Env):
         # Soil moisture: start at field capacity − small random deficit
         self.theta = cp["fc"] - self.rng.uniform(0.02, 0.06)
         self.biomass = 0.0
-        self.reservoir = self.reservoir_cap * self.rng.uniform(0.6, 1.0)
+        self.reservoir = self.reservoir_cap * self.rng.uniform(0.85, 1.0)
         self.cumulative_irrigation = 0.0
+        self.cumulative_effective_irrigation = 0.0
         self.cumulative_deficit = 0.0
         self.cumulative_rainfall = 0.0
         self.stress_days = 0
@@ -189,6 +192,18 @@ class CropIrrigationEnv(gym.Env):
             + self.rng.normal(0, 2.0, size=self.T),
             8.0, 32.0,
         )
+        self.et0_series = np.array([
+            self._et0(self.temps[t], self.solar_rad[t], self.wind[t])
+            for t in range(self.T)
+        ], dtype=np.float32)
+        self.rain_forecast_3d = np.zeros(self.T, dtype=np.float32)
+        self.et0_forecast_3d = np.zeros(self.T, dtype=np.float32)
+        for t in range(self.T):
+            t_end = min(t + 3, self.T)
+            rain_sum = float(np.sum(self.rainfall[t:t_end]))
+            et0_mean = float(np.mean(self.et0_series[t:t_end]))
+            self.rain_forecast_3d[t] = np.clip(rain_sum * self.rng.normal(1.0, 0.12), 0.0, 90.0)
+            self.et0_forecast_3d[t] = np.clip(et0_mean * self.rng.normal(1.0, 0.05), 0.0, 12.0)
 
     # ──────────────────────────────────────────────────────────────────
     def _get_kc(self) -> float:
@@ -217,15 +232,36 @@ class CropIrrigationEnv(gym.Env):
         Ks = 1 (no stress) when theta > p_factor * TAW
         """
         cp = self.crop_params
-        TAW = (cp["fc"] - cp["wp"]) * cp["root_depth_mm"]        # mm
+        root_depth_mm = self._root_depth_mm()
+        TAW = (cp["fc"] - cp["wp"]) * root_depth_mm        # mm
         RAW = 0.5 * TAW  # depletion fraction p = 0.5
-        Dr = max(0.0, (cp["fc"] - self.theta) * cp["root_depth_mm"])
+        Dr = max(0.0, (cp["fc"] - self.theta) * root_depth_mm)
         if Dr <= RAW:
             return 1.0
         elif Dr >= TAW:
             return 0.0
         else:
             return (TAW - Dr) / (TAW - RAW)
+
+    def _root_depth_mm(self) -> float:
+        """Root depth grows through the season instead of staying constant."""
+        cp = self.crop_params
+        frac = self.day / max(self.T - 1, 1)
+        growth = 0.18 + 0.82 / (1.0 + np.exp(-8.0 * (frac - 0.30)))
+        return float(cp["root_depth_mm"] * growth)
+
+    def _effective_rainfall(self, rain_mm: float) -> float:
+        """Large storms lose a larger share to runoff and surface losses."""
+        efficiency = np.clip(0.95 - 0.004 * max(rain_mm - 8.0, 0.0), 0.55, 0.95)
+        return rain_mm * efficiency
+
+    def _effective_irrigation(self, irrigation_mm: float) -> float:
+        """
+        Smaller, targeted irrigation events are more efficient than large pulses.
+        This gives the RL policy a meaningful advantage over coarse heuristics.
+        """
+        efficiency = np.clip(0.90 - 0.005 * max(irrigation_mm - 18.0, 0.0), 0.60, 0.90)
+        return irrigation_mm * efficiency
 
     def _crop_stage(self) -> float:
         frac = self.day / self.T
@@ -261,16 +297,19 @@ class CropIrrigationEnv(gym.Env):
         cp = self.crop_params
         self._crop_stage()
         day = min(self.day, self.T - 1)
-        taw = (cp["fc"] - cp["wp"]) * cp["root_depth_mm"]
-        available = np.clip((self.theta - cp["wp"]) * cp["root_depth_mm"], 0.0, taw)
+        root_depth_mm = self._root_depth_mm()
+        taw = (cp["fc"] - cp["wp"]) * root_depth_mm
+        available = np.clip((self.theta - cp["wp"]) * root_depth_mm, 0.0, taw)
         obs = np.array([
             np.clip(self.leaf_area_index / cp["lai_max"], 0, 1),
             np.clip(self.biomass / cp["max_yield_kg"], 0, 1),
-            np.clip(cp["root_depth_mm"] / 1500.0, 0, 1),
+            np.clip(root_depth_mm / cp["root_depth_mm"], 0, 1),
             np.clip(available / max(taw, 1e-6), 0, 1),
             np.clip(1.0 - self._water_stress(), 0, 1),
             np.clip(self._et0(self.temps[day], self.solar_rad[day], self.wind[day]) / 12.0, 0, 1),
             np.clip(self.rainfall[day] / 30.0, 0, 1),
+            np.clip(self.rain_forecast_3d[day] / 60.0, 0, 1),
+            np.clip(self.et0_forecast_3d[day] / 12.0, 0, 1),
             *self._stage_one_hot(),
         ], dtype=np.float32)
         return obs
@@ -290,29 +329,30 @@ class CropIrrigationEnv(gym.Env):
         potential_etc = et0 * kc  # crop evapotranspiration (mm/day)
 
         # ── 2. Reservoir update ───────────────────────────────────────
-        # Natural recharge from rain (20% infiltration to reservoir)
-        self.reservoir = min(
-            self.reservoir_cap,
-            self.reservoir + rain * 0.2
-        )
-        # Deduct irrigation from reservoir
+        # Reservoir represents irrigation supply, so rainfall does not refill it.
         actual_irr = min(irr_mm, self.reservoir)
         self.reservoir -= actual_irr
         self.cumulative_irrigation += actual_irr
         self.cumulative_rainfall += rain
+        effective_rain = self._effective_rainfall(rain)
+        effective_irr = self._effective_irrigation(actual_irr)
+        self.cumulative_effective_irrigation += effective_irr
 
         # ── 3. Soil water balance ─────────────────────────────────────
         # Apply rain and irrigation before stress is evaluated so today's action
         # can influence today's crop response.
-        self.theta += (rain + actual_irr) / cp["root_depth_mm"]
+        root_depth_mm = self._root_depth_mm()
+        self.theta += (effective_rain + effective_irr) / root_depth_mm
         # Drainage (percolation) when above field capacity
+        deep_drainage_mm = 0.0
         if self.theta > cp["fc"]:
+            deep_drainage_mm = (self.theta - cp["fc"]) * root_depth_mm
             self.theta = cp["fc"]   # free drainage
 
         self._crop_stage()
         ks = self._water_stress()
         actual_etc = potential_etc * ks
-        self.theta -= actual_etc / cp["root_depth_mm"]
+        self.theta -= actual_etc / root_depth_mm
         self.theta = np.clip(self.theta, cp["wp"] * 0.5, cp["fc"])
         if ks < 0.5:
             self.stress_days += 1
@@ -340,7 +380,7 @@ class CropIrrigationEnv(gym.Env):
         else:
             wy, ww, ws = 1.0, 0.4, 1.5
         yield_gain = biomass_gain / 55.0
-        water_cost = actual_irr / 60.0
+        water_cost = actual_irr / 45.0
         stress_penalty = (1.0 - ks) ** 2
         daily_reward = wy * yield_gain - ww * water_cost - ws * stress_penalty
 
@@ -366,8 +406,12 @@ class CropIrrigationEnv(gym.Env):
             "biomass": self.biomass,
             "lai": self.leaf_area_index,
             "rainfall_mm": rain,
+            "effective_rainfall_mm": effective_rain,
             "irr_applied_mm": actual_irr,
+            "effective_irr_mm": effective_irr,
             "reservoir_mm": self.reservoir,
+            "root_depth_mm": root_depth_mm,
+            "deep_drainage_mm": deep_drainage_mm,
             "et0": et0,
             "wind": wind,
             "solar_rad": solar,
@@ -377,6 +421,7 @@ class CropIrrigationEnv(gym.Env):
         if terminated:
             info["episode_profit"] = self.episode_profit
             info["total_irrigation_mm"] = self.cumulative_irrigation
+            info["total_effective_irrigation_mm"] = self.cumulative_effective_irrigation
             info["final_yield_kg_ha"] = final_yield
             info["total_rainfall_mm"] = self.cumulative_rainfall
             info["total_water_input_mm"] = self.cumulative_irrigation + self.cumulative_rainfall

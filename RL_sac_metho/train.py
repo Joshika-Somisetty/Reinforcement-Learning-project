@@ -10,6 +10,7 @@ Run:
 import argparse
 import csv
 import json
+import random
 import time
 from collections import deque
 from copy import deepcopy
@@ -92,12 +93,13 @@ def evaluate_policy(env, policy, n_episodes=30, deterministic=True,
     }
 
 
-def build_env(args):
+def build_env(args, seed_override=None):
     return CropIrrigationEnv(
         crop=args.crop,
         climate=args.climate,
         reservoir_capacity_mm=args.reservoir,
         dynamic_reward=not args.fixed_reward,
+        seed=args.seed if seed_override is None else seed_override,
     )
 
 
@@ -118,6 +120,9 @@ def build_agent(args, obs_dim, action_dim):
         device="cuda" if torch.cuda.is_available() and args.cuda else "cpu",
         use_amp=args.amp,
         encoder_type=args.encoder_type,
+        alpha_min=args.alpha_min,
+        alpha_max=args.alpha_max,
+        critic_loss_type=args.critic_loss,
     )
 
 
@@ -136,19 +141,28 @@ def run_name(args):
     return f"{base} | seq={args.seq_len} | hidden={args.lstm_hidden} | {reward_name}"
 
 
+def set_global_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 def train(args):
     Path("checkpoints").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
 
-    env = build_env(args)
-    eval_env = build_env(args)
+    set_global_seed(args.seed)
+    env = build_env(args, seed_override=args.seed)
+    eval_env = build_env(args, seed_override=args.seed + 101)
 
     obs_dim    = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
     agent = build_agent(args, obs_dim, action_dim)
-    checkpoint_path = getattr(args, "checkpoint_path", "checkpoints/tsa_sac_best.pt")
+    checkpoint_path = getattr(args, "checkpoint_path", "checkpoints/tsa_sac_improved_best.pt")
     history_path = getattr(args, "history_path", "results/training_history.json")
 
     print(f"\n{'='*68}")
@@ -203,11 +217,12 @@ def train(args):
             ep_reward += reward
             total_steps += 1
 
-            if total_steps >= args.warmup:
-                losses = agent.update()
-                if losses:
-                    for k in ep_losses:
-                        ep_losses[k].append(losses.get(k, 0))
+            if total_steps >= args.warmup and total_steps % args.update_every == 0:
+                for _ in range(args.gradient_steps):
+                    losses = agent.update()
+                    if losses:
+                        for k in ep_losses:
+                            ep_losses[k].append(losses.get(k, 0))
 
         # ── Logging ──────────────────────────────────────────────────────────
         profit = info.get("episode_profit", ep_reward)
@@ -224,7 +239,7 @@ def train(args):
         # ── Eval & checkpoint ─────────────────────────────────────────────────
         if ep % args.eval_every == 0:
             eval_result = evaluate_policy(
-                eval_env, agent, n_episodes=10, seq_len=args.seq_len
+                eval_env, agent, n_episodes=args.eval_episodes, seq_len=args.seq_len
             )
             elapsed = time.time() - start_time
             print(
@@ -251,7 +266,7 @@ def train(args):
 
 # ──────────────────────────────────────────────────────────────────────────────
 def compare_baselines(args, agent=None):
-    env = build_env(args)
+    env = build_env(args, seed_override=args.seed + 202)
 
     if agent is None:
         obs_dim    = env.observation_space.shape[0]
@@ -277,7 +292,7 @@ def compare_baselines(args, agent=None):
 
     results = {}
     for name, policy in policies.items():
-        r = evaluate_policy(env, policy, n_episodes=30,
+        r = evaluate_policy(env, policy, n_episodes=args.compare_episodes,
                             seed_start=2000, seq_len=args.seq_len)
         results[name] = r
         print(
@@ -390,13 +405,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--crop",       default="cotton",     choices=["cotton","wheat","maize"])
     parser.add_argument("--climate",    default="arid", choices=["semi_arid","humid","arid"])
+    parser.add_argument("--seed",       default=42, type=int)
     parser.add_argument("--episodes",   default=1000,  type=int)
-    parser.add_argument("--warmup",     default=10000, type=int)
+    parser.add_argument("--warmup",     default=5000, type=int)
     parser.add_argument("--batch-size", default=64,  type=int)
     parser.add_argument("--buffer-size",default=1_000_000, type=int)
-    parser.add_argument("--lr",         default=3e-4, type=float)
-    parser.add_argument("--reservoir",  default=300.0,type=float)
+    parser.add_argument("--lr",         default=1e-4, type=float)
+    parser.add_argument("--reservoir",  default=800.0,type=float)
     parser.add_argument("--eval-every", default=50,   type=int)
+    parser.add_argument("--eval-episodes", default=20, type=int)
+    parser.add_argument("--compare-episodes", default=30, type=int)
+    parser.add_argument("--update-every", default=2, type=int,
+                        help="Run gradient updates every N environment steps")
+    parser.add_argument("--gradient-steps", default=1, type=int,
+                        help="Number of gradient updates per update event")
     parser.add_argument("--seq-len",    default=7,    type=int,
                         help="Days of observation history fed to BiLSTM")
     parser.add_argument("--lstm-hidden",default=64,  type=int)
@@ -405,10 +427,15 @@ def main():
     parser.add_argument("--fixed-reward", action="store_true",
                         help="Use a fixed reward weighting instead of the stage-aware dynamic reward")
     parser.add_argument("--eval-only",  action="store_true")
-    parser.add_argument("--model",      default="checkpoints/tsa_sac_best.pt")
+    parser.add_argument("--model",      default="checkpoints/tsa_sac_improved_best.pt")
+    parser.add_argument("--checkpoint-path", default="checkpoints/tsa_sac_improved_best.pt")
+    parser.add_argument("--history-path", default="results/training_history.json")
     parser.add_argument("--cuda",       action="store_true")
     parser.add_argument("--amp",        action="store_true",
                         help="Enable mixed precision on CUDA to reduce GPU memory usage")
+    parser.add_argument("--alpha-min",  default=0.02, type=float)
+    parser.add_argument("--alpha-max",  default=0.5, type=float)
+    parser.add_argument("--critic-loss", default="huber", choices=["huber", "mse"])
     parser.add_argument("--run-ablation", action="store_true")
     parser.add_argument("--ablation-episodes", default=120, type=int)
     parser.add_argument("--ablation-warmup", default=1000, type=int)
@@ -419,7 +446,8 @@ def main():
     if args.run_ablation:
         run_ablation(args)
     elif args.eval_only:
-        env = CropIrrigationEnv(crop=args.crop, climate=args.climate)
+        set_global_seed(args.seed)
+        env = build_env(args, seed_override=args.seed + 303)
         obs_dim    = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
         agent = build_agent(args, obs_dim, action_dim)
