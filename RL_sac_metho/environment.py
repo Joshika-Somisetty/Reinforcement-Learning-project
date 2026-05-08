@@ -7,6 +7,8 @@ it now mirrors the paper more closely:
   - forecast-aware preprocessed state with reservoir awareness
   - continuous irrigation action in [0, 60] mm
   - soil / crop / weather variables that proxy the paper's DSSAT features
+  - seasonal water budget constraint for scarcity-driven decision making
+  - optional real weather data support
 """
 
 import gymnasium as gym
@@ -56,6 +58,15 @@ CROP_PROFILES = {
     ),
 }
 
+# Default seasonal water budgets (mm) per crop — calibrated so that
+# the "moderate" budget forces real trade-offs (roughly 50-60% of
+# unconstrained optimal irrigation).
+WATER_BUDGET_PRESETS = {
+    "cotton":  {"generous": 600, "moderate": 400, "scarce": 250},
+    "wheat":   {"generous": 400, "moderate": 280, "scarce": 180},
+    "maize":   {"generous": 450, "moderate": 300, "scarce": 200},
+}
+
 STATE_KEYS = [
     "lai_norm",
     "biomass_norm",
@@ -72,6 +83,7 @@ STATE_KEYS = [
     "stage_reproductive",
     "stage_boll_fill",
     "stage_maturity",
+    "budget_remaining_norm",     # NEW: seasonal water budget fraction
 ]
 
 
@@ -84,6 +96,8 @@ class CropIrrigationEnv(gym.Env):
       2. Physics-based soil-water balance
       3. Stochastic Markov weather chain
       4. Multi-objective reward function
+      5. Seasonal water budget constraint
+      6. Optional real weather data
     """
 
     metadata = {"render_modes": ["human"]}
@@ -95,10 +109,14 @@ class CropIrrigationEnv(gym.Env):
         climate: str = "arid",    # "semi_arid" | "humid" | "arid"
         dynamic_reward: bool = True,
         terminal_reward_scale: float = 100.0,
+        water_budget_mm: Optional[float] = None,
+        water_budget_level: str = "moderate",
+        weather_source: str = "synthetic",   # "synthetic" | "real"
         seed: Optional[int] = None,
         render_mode=None,
     ):
         super().__init__()
+        self.crop_name = crop
         self.crop_params = CROP_PROFILES[crop]
         self.T = self.crop_params["season_days"]
         self.reservoir_cap = reservoir_capacity_mm
@@ -106,6 +124,15 @@ class CropIrrigationEnv(gym.Env):
         self.dynamic_reward = dynamic_reward
         self.terminal_reward_scale = max(float(terminal_reward_scale), 1e-6)
         self.render_mode = render_mode
+        self.weather_source = weather_source
+
+        # ── Water budget ─────────────────────────────────────────────
+        if water_budget_mm is not None:
+            self.water_budget_cap = float(water_budget_mm)
+        else:
+            self.water_budget_cap = float(
+                WATER_BUDGET_PRESETS[crop][water_budget_level]
+            )
 
         # ── action / observation spaces ──────────────────────────────
         # Continuous irrigation depth in mm [0, 60] as in the paper.
@@ -139,6 +166,7 @@ class CropIrrigationEnv(gym.Env):
         self.theta = cp["fc"] - self.rng.uniform(0.02, 0.06)
         self.biomass = 0.0
         self.reservoir = self.reservoir_cap * self.rng.uniform(0.85, 1.0)
+        self.water_budget_remaining = self.water_budget_cap
         self.cumulative_irrigation = 0.0
         self.cumulative_effective_irrigation = 0.0
         self.cumulative_deficit = 0.0
@@ -147,6 +175,7 @@ class CropIrrigationEnv(gym.Env):
         self.episode_profit = 0.0
         self.leaf_area_index = 0.05
         self.stage_idx = 0
+        self.wasted_actions = 0   # times agent tried to irrigate past budget
 
         # Pre-generate season weather for this episode
         self._generate_season_weather()
@@ -155,7 +184,12 @@ class CropIrrigationEnv(gym.Env):
         """
         Generate stochastic daily weather for one season using a
         two-state Markov chain for rainfall occurrence.
+        Falls back to real weather if weather_source == "real".
         """
+        if self.weather_source == "real":
+            self._load_real_weather()
+            return
+
         cp = self._climate_params
         p = cp["p_rain"]
         # Markov transition: P(rain|dry), P(rain|wet)
@@ -207,6 +241,41 @@ class CropIrrigationEnv(gym.Env):
             et0_mean = float(np.mean(self.et0_series[t:t_end]))
             self.rain_forecast_3d[t] = np.clip(rain_sum * self.rng.normal(1.0, 0.12), 0.0, 90.0)
             self.et0_forecast_3d[t] = np.clip(et0_mean * self.rng.normal(1.0, 0.05), 0.0, 12.0)
+
+    def _load_real_weather(self):
+        """Load real weather data from weather_data module."""
+        try:
+            from weather_data import load_weather_season
+            data = load_weather_season(
+                crop=self.crop_name,
+                season_days=self.T,
+                climate=self.climate,
+                rng=self.rng,
+            )
+            self.temps = data["temperature"]
+            self.rainfall = data["rainfall"]
+            self.wind = data["wind"]
+            self.solar_rad = data["solar_rad"]
+            self.et0_series = np.array([
+                self._et0(self.temps[t], self.solar_rad[t], self.wind[t])
+                for t in range(self.T)
+            ], dtype=np.float32)
+            self.rain_forecast_3d = np.zeros(self.T, dtype=np.float32)
+            self.et0_forecast_3d = np.zeros(self.T, dtype=np.float32)
+            for t in range(self.T):
+                t_end = min(t + 3, self.T)
+                rain_sum = float(np.sum(self.rainfall[t:t_end]))
+                et0_mean = float(np.mean(self.et0_series[t:t_end]))
+                self.rain_forecast_3d[t] = np.clip(
+                    rain_sum * self.rng.normal(1.0, 0.12), 0.0, 90.0
+                )
+                self.et0_forecast_3d[t] = np.clip(
+                    et0_mean * self.rng.normal(1.0, 0.05), 0.0, 12.0
+                )
+        except Exception as e:
+            print(f"[WARNING] Real weather load failed ({e}), using synthetic.")
+            self.weather_source = "synthetic"
+            self._generate_season_weather()
 
     # ──────────────────────────────────────────────────────────────────
     def _get_kc(self) -> float:
@@ -295,6 +364,21 @@ class CropIrrigationEnv(gym.Env):
         ]
         return weights[self.stage_idx]
 
+    def _scarcity_cost_multiplier(self) -> float:
+        """
+        Water becomes progressively more expensive as the seasonal budget
+        depletes.  This non-linear pricing forces the agent to plan ahead.
+
+        At 100% budget remaining → 1.0× cost
+        At  50% budget remaining → 1.3× cost
+        At  20% budget remaining → 2.0× cost
+        At   0% budget remaining → 3.0× cost  (but irrigation is blocked)
+        """
+        if self.water_budget_cap <= 0:
+            return 1.0
+        frac = np.clip(self.water_budget_remaining / self.water_budget_cap, 0, 1)
+        return 1.0 + 2.0 * (1.0 - frac) ** 2
+
     # ──────────────────────────────────────────────────────────────────
     def _get_obs(self) -> np.ndarray:
         cp = self.crop_params
@@ -303,6 +387,9 @@ class CropIrrigationEnv(gym.Env):
         root_depth_mm = self._root_depth_mm()
         taw = (cp["fc"] - cp["wp"]) * root_depth_mm
         available = np.clip((self.theta - cp["wp"]) * root_depth_mm, 0.0, taw)
+        budget_norm = np.clip(
+            self.water_budget_remaining / max(self.water_budget_cap, 1e-6), 0, 1
+        )
         obs = np.array([
             np.clip(self.leaf_area_index / cp["lai_max"], 0, 1),
             np.clip(self.biomass / cp["max_yield_kg"], 0, 1),
@@ -315,6 +402,7 @@ class CropIrrigationEnv(gym.Env):
             np.clip(self.rain_forecast_3d[day] / 60.0, 0, 1),
             np.clip(self.et0_forecast_3d[day] / 12.0, 0, 1),
             *self._stage_one_hot(),
+            budget_norm,
         ], dtype=np.float32)
         return obs
 
@@ -332,10 +420,18 @@ class CropIrrigationEnv(gym.Env):
         kc    = self._get_kc()
         potential_etc = et0 * kc  # crop evapotranspiration (mm/day)
 
-        # ── 2. Reservoir update ───────────────────────────────────────
-        # Reservoir represents irrigation supply, so rainfall does not refill it.
-        actual_irr = min(irr_mm, self.reservoir)
+        # ── 2. Budget + Reservoir update ─────────────────────────────
+        # Water budget is the binding constraint; reservoir is secondary.
+        budget_limited = min(irr_mm, self.water_budget_remaining)
+        actual_irr = min(budget_limited, self.reservoir)
+
+        # Track wasted actions (agent tried to irrigate but budget empty)
+        budget_waste = irr_mm - actual_irr
+        if budget_waste > 1.0:
+            self.wasted_actions += 1
+
         self.reservoir -= actual_irr
+        self.water_budget_remaining -= actual_irr
         self.cumulative_irrigation += actual_irr
         self.cumulative_rainfall += rain
         effective_rain = self._effective_rainfall(rain)
@@ -384,9 +480,17 @@ class CropIrrigationEnv(gym.Env):
         else:
             wy, ww, ws = 1.0, 0.4, 1.5
         yield_gain = biomass_gain / 55.0
-        water_cost = actual_irr / 45.0
+
+        # Scarcity-adjusted water cost
+        scarcity = self._scarcity_cost_multiplier()
+        water_cost = (actual_irr / 45.0) * scarcity
+
         stress_penalty = (1.0 - ks) ** 2
         daily_reward = wy * yield_gain - ww * water_cost - ws * stress_penalty
+
+        # Small penalty for trying to irrigate with exhausted budget
+        if budget_waste > 1.0:
+            daily_reward -= 0.05
 
         self.day += 1
         terminated = self.day >= self.T
@@ -414,6 +518,7 @@ class CropIrrigationEnv(gym.Env):
             "irr_applied_mm": actual_irr,
             "effective_irr_mm": effective_irr,
             "reservoir_mm": self.reservoir,
+            "budget_remaining_mm": self.water_budget_remaining,
             "root_depth_mm": root_depth_mm,
             "deep_drainage_mm": deep_drainage_mm,
             "et0": et0,
@@ -431,6 +536,9 @@ class CropIrrigationEnv(gym.Env):
             info["total_water_input_mm"] = self.cumulative_irrigation + self.cumulative_rainfall
             info["stress_days"] = self.stress_days
             info["terminal_reward_scaled"] = terminal_reward
+            info["water_budget_cap_mm"] = self.water_budget_cap
+            info["water_budget_used_mm"] = self.water_budget_cap - self.water_budget_remaining
+            info["wasted_actions"] = self.wasted_actions
 
         return obs, reward, terminated, False, info
 
@@ -446,5 +554,6 @@ class CropIrrigationEnv(gym.Env):
                 f"Day {self.day:3d} | θ={self.theta:.3f} | "
                 f"Ks={self._water_stress():.2f} | "
                 f"Biomass={self.biomass:.1f} | "
-                f"Reservoir={self.reservoir:.0f}mm"
+                f"Reservoir={self.reservoir:.0f}mm | "
+                f"Budget={self.water_budget_remaining:.0f}mm"
             )

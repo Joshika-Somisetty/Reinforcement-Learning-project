@@ -102,7 +102,7 @@ def plot_comparison(comparison_path="results/baseline_comparison.json", show=Tru
     iwues   = [data[n]["iwue_mean"] for n in names]
     stress  = [data[n]["stress_days_mean"] for n in names]
 
-    colors = ["#94A3B8", "#94A3B8", "#94A3B8", "#16A34A"]
+    colors = ["#94A3B8"] * max(len(names) - 1, 0) + ["#16A34A"]
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     fig.suptitle("Policy Comparison", fontsize=13, fontweight="bold")
@@ -160,7 +160,7 @@ def plot_robustness(comparison_path="results/baseline_comparison.json", show=Tru
         data = json.load(f)
 
     names = list(data.keys())
-    colors = ["#94A3B8", "#94A3B8", "#94A3B8", "#16A34A"]
+    colors = ["#94A3B8"] * max(len(names) - 1, 0) + ["#16A34A"]
 
     metrics = [
         ("profit_mean", "profit_std", "Profit Robustness", "Profit ($)"),
@@ -262,22 +262,29 @@ def plot_ablation_results(ablation_path="results/ablation/ablation_results.json"
     yields = [data[n]["yield_mean"] for n in names]
     iwues = [data[n]["iwue_mean"] for n in names]
     stress = [data[n]["stress_days_mean"] for n in names]
+    profit_err = [data[n].get("profit_std_across_seeds", data[n].get("profit_std", 0.0)) for n in names]
+    yield_err = [data[n].get("yield_std_across_seeds", data[n].get("yield_std", 0.0)) for n in names]
+    iwue_err = [data[n].get("iwue_std_across_seeds", data[n].get("iwue_std", 0.0)) for n in names]
+    stress_err = [data[n].get("stress_days_std_across_seeds", data[n].get("stress_days_std", 0.0)) for n in names]
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     fig.suptitle("Ablation Study", fontsize=13, fontweight="bold")
     ax1, ax2, ax3, ax4 = axes.flatten()
-    colors = ["#94A3B8", "#60A5FA", "#F59E0B", "#16A34A"]
+    palette = ["#64748B", "#2563EB", "#D97706", "#16A34A", "#9333EA", "#DC2626"]
+    colors = [palette[i % len(palette)] for i in range(len(names))]
 
-    for ax, values, title, ylabel, fmt, offset in [
-        (ax1, profits, "Mean Season Profit", "Profit ($)", "{:.1f}", 4),
-        (ax2, yields, "Mean Final Yield", "kg/ha", "{:.0f}", 25),
-        (ax3, iwues, "Irrigation Water Use Efficiency", "kg/ha/mm", "{:.2f}", 0.04),
-        (ax4, stress, "Stress Days", "days/season", "{:.1f}", 0.15),
+    for ax, values, errors, title, ylabel, fmt, offset in [
+        (ax1, profits, profit_err, "Mean Season Profit", "Profit ($)", "{:.1f}", 4),
+        (ax2, yields, yield_err, "Mean Final Yield", "kg/ha", "{:.0f}", 25),
+        (ax3, iwues, iwue_err, "Irrigation Water Use Efficiency", "kg/ha/mm", "{:.2f}", 0.04),
+        (ax4, stress, stress_err, "Stress Days", "days/season", "{:.1f}", 0.15),
     ]:
-        bars = ax.bar(names, values, color=colors, edgecolor="white", linewidth=1.2)
+        x = np.arange(len(names))
+        bars = ax.bar(x, values, yerr=errors, capsize=4, color=colors, edgecolor="white", linewidth=1.2)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
-        ax.set_xticklabels(names, rotation=15, ha="right")
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=20, ha="right")
         ax.grid(axis="y", alpha=0.3)
         for bar, val in zip(bars, values):
             ax.text(
@@ -292,6 +299,41 @@ def plot_ablation_results(ablation_path="results/ablation/ablation_results.json"
     plt.tight_layout()
     plt.savefig("results/plots/ablation_study.png", dpi=150, bbox_inches="tight")
     print("Saved: results/plots/ablation_study.png")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    history_sets = {
+        name: [Path(p) for p in data[name].get("history_paths", []) if Path(p).exists()]
+        for name in names
+    }
+    history_sets = {name: paths for name, paths in history_sets.items() if paths}
+    if not history_sets:
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for idx, (name, paths) in enumerate(history_sets.items()):
+        curves = []
+        for path in paths:
+            with open(path) as f:
+                h = json.load(f)
+            curves.append(np.asarray(h.get("profit", []), dtype=np.float32))
+        min_len = min(len(c) for c in curves if len(c) > 0)
+        if min_len == 0:
+            continue
+        stacked = np.vstack([c[:min_len] for c in curves])
+        mean_curve = smooth(stacked.mean(axis=0), window=max(1, min(10, min_len // 5)))
+        x = np.arange(1, len(mean_curve) + 1)
+        ax.plot(x, mean_curve, label=name, color=palette[idx % len(palette)], linewidth=2)
+    ax.set_title("Ablation Learning Curves")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Training profit ($)")
+    ax.grid(alpha=0.3)
+    ax.legend(ncol=2, fontsize=9)
+    plt.tight_layout()
+    plt.savefig("results/plots/ablation_learning_curves.png", dpi=150, bbox_inches="tight")
+    print("Saved: results/plots/ablation_learning_curves.png")
     if show:
         plt.show()
     else:

@@ -16,11 +16,15 @@ Key ideas adopted:
 | Feature | Paper | This Project |
 |---|---|---|
 | Algorithm | TSA-SAC | TSA-SAC-style SAC + BiLSTM + temporal attention + feature attention |
+| Additional algorithms | — | PPO, DDPG (for comparison) |
 | Environment | DSSAT (external simulator) | Physics-based surrogate environment |
-| Weather | Historical seasons | Stochastic seasonal weather generator |
+| Weather | Historical seasons | Stochastic Markov generator + NASA POWER real data |
 | Action space | Continuous [0–60 mm] | Continuous [0–60 mm] |
-| Baselines | FE / SAC / DDPG / PPO / LSTM-SAC | Random / Farmer / Threshold / TSA-SAC |
+| Baselines | FE / SAC / DDPG / PPO / LSTM-SAC | Random / Farmer / Threshold / FarmerExpert / PPO / DDPG / TSA-SAC |
 | Crop models | Cotton | Cotton default, plus wheat and maize presets |
+| Water constraint | — | Seasonal water budget (generous / moderate / scarce) |
+| Multi-zone | — | Shared-reservoir multi-zone farming |
+| Transfer learning | — | Cross-crop encoder transfer with freeze/unfreeze |
 
 ---
 
@@ -35,7 +39,7 @@ Key ideas adopted:
 │  │  (Markov)    │  │  (FAO-56)     │  │  (RUE)   │ │
 │  └──────────────┘  └───────────────┘  └──────────┘ │
 │         ↓                  ↓                ↓       │
-│              15-dim observation vector              │
+│              16-dim observation vector              │
 └─────────────────────────────────────────────────────┘
                          ↕
 ┌─────────────────────────────────────────────────────┐
@@ -54,7 +58,7 @@ Key ideas adopted:
 
 ## RL Formulation
 
-### State Space (15-dimensional)
+### State Space (16-dimensional)
 | Index | Variable | Description |
 |---|---|---|
 | 0 | `lai_norm` | Leaf area index proxy [0,1] |
@@ -68,13 +72,14 @@ Key ideas adopted:
 | 8 | `rain_forecast_3d_norm` | Noisy 3-day rainfall forecast [0,1] |
 | 9 | `et0_forecast_3d_norm` | Noisy 3-day ET0 forecast [0,1] |
 | 10-14 | `stage_*` | One-hot critical growth stage indicators |
+| 15 | `budget_remaining_norm` | Seasonal water budget fraction [0,1] |
 
 ### Action Space
 - **Continuous**: irrigation depth in mm ∈ [0, 60] per day
 
 ### Reward (Stage-Aware Multi-Objective)
 ``` 
-Daily:    r_t = w_y * yield_gain − w_w * irrigation_cost − w_s * stress_penalty
+Daily:    r_t = w_y * yield_gain − w_w * irrigation_cost × scarcity − w_s * stress_penalty
 Terminal: r_T = (yield_revenue - total_water_cost) / terminal_reward_scale
 ```
 
@@ -87,12 +92,11 @@ Terminal: r_T = (yield_revenue - total_water_cost) / terminal_reward_scale
 
 ---
 
-## 🌦️ Realistic Stochastic Environment
+## 🌦️ Realistic Environment
 
 ### Weather Model
-- Two-state Markov chain for rainfall occurrence
-- Gamma-distributed rainfall amounts on wet days
-- Sinusoidal seasonal temperature + Gaussian noise
+- **Synthetic** (default): Two-state Markov chain for rainfall, sinusoidal temperature, Gaussian noise
+- **Real**: NASA POWER API historical weather (Lubbock TX, Hyderabad, Gainesville FL)
 - Three climate presets: `semi_arid`, `humid`, `arid`
 
 ### Soil Water Balance (FAO-56)
@@ -100,6 +104,14 @@ Terminal: r_T = (yield_revenue - total_water_cost) / terminal_reward_scale
 θ_{t+1} = θ_t + (rain + irrigation) / root_depth − ET_c / root_depth
 ET_c     = ET_0 × Kc × Ks
 Ks       = water stress coefficient (1 = no stress)
+```
+
+### Water Budget Constraint
+```
+Seasonal budget presets (cotton):
+  generous: 600mm  → easy
+  moderate: 400mm  → challenging, forces smart timing
+  scarce:   250mm  → very hard, forces real trade-offs
 ```
 
 ---
@@ -110,17 +122,32 @@ Ks       = water stress coefficient (1 = no stress)
 # Install dependencies
 pip install -r requirements.txt
 
-# CUDA smoke test
-python train.py --episodes 20 --warmup 500 --eval-every 5 --eval-episodes 3 --compare-episodes 3 --cuda --amp --checkpoint-path checkpoints/gpu_test.pt --history-path results/gpu_test_history.json
+# Train TSA-SAC with moderate water budget (cotton, arid)
+python train.py --crop cotton --climate arid --episodes 1000
 
-# Train TSA-SAC style agent (cotton, arid, 1000 episodes)
-python train.py --crop cotton --climate arid --episodes 1000 --cuda --amp
+# Train with specific water budget
+python train.py --water-budget 400 --episodes 500
 
-# Train on maize in arid conditions
-python train.py --crop maize --climate arid --episodes 500
+# Train PPO or DDPG baseline
+python train.py --algorithm ppo --episodes 500
+python train.py --algorithm ddpg --episodes 500
 
-# Evaluate saved model and compare baselines
-python train.py --eval-only --model checkpoints/tsa_sac_improved_best.pt --cuda --amp
+# Train with real weather data
+python weather_data.py --generate-offline   # first time: generate CSV
+python train.py --weather-source real --episodes 500
+
+# Transfer learning: pre-train on cotton, fine-tune on wheat
+python train.py --crop cotton --episodes 500 --checkpoint-path checkpoints/cotton_pretrained.pt
+python train.py --crop wheat --transfer-from checkpoints/cotton_pretrained.pt --freeze-encoder-epochs 50 --episodes 300
+
+# Run ablation study (3 seeds, 6 variants)
+python train.py --run-ablation --ablation-episodes 500 --water-budget 400
+
+# Multi-zone farming
+python multi_zone_train.py --zones cotton,maize --shared-budget 500 --episodes 200
+
+# Evaluate saved model and compare all baselines
+python train.py --eval-only --model checkpoints/tsa_sac_improved_best.pt
 
 # Plot training curves, comparisons, and agent metrics
 python visualize.py --no-show
@@ -135,12 +162,13 @@ python visualize.py --no-show
 | Random | ~$300 | ~1200 |
 | Fixed 7-day | ~$700 | ~700 |
 | Threshold | ~$900 | ~550 |
+| Farmer Expert | ~$1000 | ~450 |
 | **SAC (ours)** | **~$1100** | **~420** |
 
 SAC learns to:
 1. Skip irrigation when rainfall is forecast
 2. Apply heavy irrigation at critical flowering stage
-3. Conserve reservoir for dry spells
+3. Conserve water budget for dry spells
 4. Trade off stress risk vs water cost dynamically
 
 ---
@@ -149,11 +177,17 @@ SAC learns to:
 
 ```
 irrigation_rl/
-├── environment.py    # Stochastic crop-irrigation Gymnasium env
-├── sac_agent.py      # SAC with auto-α, twin-Q, replay buffer
-├── baselines.py      # Random / Fixed / Threshold policies
-├── train.py          # Training loop + evaluation
-├── visualize.py      # Plots: training curves, policy comparison
+├── environment.py      # Gymnasium env: weather, soil, crop, reward, water budget
+├── sac_agent.py        # TSA-SAC: BiLSTM + attention + SAC + transfer learning
+├── ppo_agent.py        # PPO baseline agent
+├── ddpg_agent.py       # DDPG baseline agent
+├── baselines.py        # Random / Fixed / Threshold / FarmerExpert policies
+├── train.py            # Training loop, eval, ablation, baseline comparison
+├── visualize.py        # Plots: training, comparison, ablation, robustness
+├── weather_data.py     # NASA POWER real weather + offline CSV
+├── multi_zone_env.py   # Multi-zone shared-reservoir environment
+├── multi_zone_train.py # Multi-zone SAC training script
+├── data/weather/       # Cached weather CSVs
 ├── requirements.txt
 └── README.md
 ```
@@ -162,8 +196,12 @@ irrigation_rl/
 
 ## 🔬 Enhancement Ideas (for report/presentation)
 
-1. **BiLSTM temporal state** — encode last 7 days of obs (paper's key trick)
-2. **Multi-crop transfer learning** — pre-train on maize, fine-tune on wheat
-3. **PPO comparison** — on-policy vs off-policy analysis
-4. **Water budget constraint** — add seasonal water limit as hard constraint
-5. **Multi-zone farming** — extend to multi-agent with shared reservoir
+1. ~~BiLSTM temporal state~~ ✅ Implemented
+2. ~~Multi-crop transfer learning~~ ✅ Implemented
+3. ~~PPO comparison~~ ✅ Implemented
+4. ~~Water budget constraint~~ ✅ Implemented
+5. ~~Multi-zone farming~~ ✅ Implemented
+6. ~~Real weather data~~ ✅ Implemented
+7. **Nitrogen management** — add soil nitrogen as state variable
+8. **Market price uncertainty** — stochastic crop prices
+9. **Climate change scenarios** — train under projected future weather

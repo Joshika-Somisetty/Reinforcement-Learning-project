@@ -499,3 +499,93 @@ class SACAgent:
             self.log_alpha = ckpt["log_alpha"].to(self.device).requires_grad_(True)
             self.alpha = self.log_alpha.exp().item()
             self.alpha_optim = optim.Adam([self.log_alpha], lr=self.actor_optim.param_groups[0]["lr"])
+
+    # ── Transfer learning ─────────────────────────────────────────────────────
+    def freeze_encoder(self):
+        """Freeze all encoder parameters (BiLSTM + attention) in actor and critic."""
+        for param in self.actor.encoder.parameters():
+            param.requires_grad = False
+        for param in self.critic.enc1.parameters():
+            param.requires_grad = False
+        for param in self.critic.enc2.parameters():
+            param.requires_grad = False
+        # Rebuild optimisers to exclude frozen params
+        self.actor_optim = optim.Adam(
+            filter(lambda p: p.requires_grad, self.actor.parameters()),
+            lr=self.actor_optim.param_groups[0]["lr"],
+        )
+        self.critic_optim = optim.Adam(
+            filter(lambda p: p.requires_grad, self.critic.parameters()),
+            lr=self.critic_optim.param_groups[0]["lr"],
+        )
+        print("  Encoder frozen (actor + critic)")
+
+    def unfreeze_encoder(self, lr_factor: float = 0.1):
+        """Unfreeze encoder and rebuild optimisers with lower LR for encoder."""
+        base_lr = self.actor_optim.param_groups[0]["lr"]
+        for param in self.actor.encoder.parameters():
+            param.requires_grad = True
+        for param in self.critic.enc1.parameters():
+            param.requires_grad = True
+        for param in self.critic.enc2.parameters():
+            param.requires_grad = True
+        # Use param groups: lower LR for encoder, normal LR for heads
+        self.actor_optim = optim.Adam([
+            {"params": self.actor.encoder.parameters(), "lr": base_lr * lr_factor},
+            {"params": list(self.actor.mlp.parameters())
+                     + list(self.actor.mean_layer.parameters())
+                     + list(self.actor.log_std_layer.parameters()), "lr": base_lr},
+        ])
+        self.critic_optim = optim.Adam([
+            {"params": list(self.critic.enc1.parameters())
+                     + list(self.critic.enc2.parameters()), "lr": base_lr * lr_factor},
+            {"params": list(self.critic.q1.parameters())
+                     + list(self.critic.q2.parameters()), "lr": base_lr},
+        ])
+        print(f"  Encoder unfrozen (encoder LR={base_lr * lr_factor:.1e})")
+
+    def load_transfer(self, path: str):
+        """
+        Load encoder weights from a checkpoint trained on a different crop/budget.
+        Skips obs_dim mismatch checks — only loads encoder + attention weights,
+        ignoring MLP heads which may have different dimensions.
+        """
+        ckpt = torch.load(path, map_location=self.device)
+        # Only transfer encoder weights (BiLSTM + attention layers)
+        src_actor = ckpt.get("actor", {})
+        src_critic = ckpt.get("critic", {})
+
+        def _filter_encoder(state_dict, prefix):
+            return {k: v for k, v in state_dict.items() if k.startswith(prefix)}
+
+        actor_enc = _filter_encoder(src_actor, "encoder.")
+        critic_enc1 = _filter_encoder(src_critic, "enc1.")
+        critic_enc2 = _filter_encoder(src_critic, "enc2.")
+
+        loaded = 0
+        if actor_enc:
+            self.actor.encoder.load_state_dict(
+                {k.replace("encoder.", ""): v for k, v in actor_enc.items()},
+                strict=False,
+            )
+            loaded += len(actor_enc)
+        if critic_enc1:
+            self.critic.enc1.load_state_dict(
+                {k.replace("enc1.", ""): v for k, v in critic_enc1.items()},
+                strict=False,
+            )
+            loaded += len(critic_enc1)
+        if critic_enc2:
+            self.critic.enc2.load_state_dict(
+                {k.replace("enc2.", ""): v for k, v in critic_enc2.items()},
+                strict=False,
+            )
+            loaded += len(critic_enc2)
+
+        # Sync critic target with transferred weights
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        print(f"  Transferred {loaded} encoder weight tensors from {path}")
+
+    def load_encoder_only(self, path: str):
+        """Alias used by transfer-learning experiments."""
+        self.load_transfer(path)
