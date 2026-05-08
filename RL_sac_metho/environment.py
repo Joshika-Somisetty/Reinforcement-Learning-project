@@ -108,7 +108,7 @@ class CropIrrigationEnv(gym.Env):
         reservoir_capacity_mm: float = 800.0,
         climate: str = "arid",    # "semi_arid" | "humid" | "arid"
         dynamic_reward: bool = True,
-        terminal_reward_scale: float = 100.0,
+        terminal_reward_scale: float = 25.0,
         water_budget_mm: Optional[float] = None,
         water_budget_level: str = "moderate",
         weather_source: str = "synthetic",   # "synthetic" | "real"
@@ -355,12 +355,13 @@ class CropIrrigationEnv(gym.Env):
         return one_hot
 
     def _dynamic_reward_weights(self):
+        #                  (yield_w, water_w, stress_w)
         weights = [
-            (0.8, 0.5, 1.5),  # emergence
-            (1.0, 0.3, 2.0),  # vegetative / squaring proxy
-            (1.2, 0.1, 3.5),  # flowering / reproductive
-            (0.5, 1.0, 1.0),  # boll opening / grain fill proxy
-            (0.1, 1.5, 0.5),  # maturity
+            (0.8, 0.4, 0.8),  # emergence — low stress penalty, crop is hardy
+            (1.0, 0.3, 1.0),  # vegetative — moderate
+            (1.2, 0.2, 1.8),  # flowering / reproductive — stress matters most here
+            (0.6, 0.5, 0.6),  # boll opening / grain fill — winding down
+            (0.2, 0.8, 0.3),  # maturity — mostly about water cost now
         ]
         return weights[self.stage_idx]
 
@@ -370,14 +371,14 @@ class CropIrrigationEnv(gym.Env):
         depletes.  This non-linear pricing forces the agent to plan ahead.
 
         At 100% budget remaining → 1.0× cost
-        At  50% budget remaining → 1.3× cost
-        At  20% budget remaining → 2.0× cost
-        At   0% budget remaining → 3.0× cost  (but irrigation is blocked)
+        At  50% budget remaining → 1.25× cost
+        At  20% budget remaining → 1.64× cost
+        At   0% budget remaining → 2.0× cost  (but irrigation is blocked)
         """
         if self.water_budget_cap <= 0:
             return 1.0
         frac = np.clip(self.water_budget_remaining / self.water_budget_cap, 0, 1)
-        return 1.0 + 2.0 * (1.0 - frac) ** 2
+        return 1.0 + 1.0 * (1.0 - frac) ** 2
 
     # ──────────────────────────────────────────────────────────────────
     def _get_obs(self) -> np.ndarray:
