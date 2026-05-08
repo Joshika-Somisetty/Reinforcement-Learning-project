@@ -489,6 +489,11 @@ class CropIrrigationEnv(gym.Env):
         stress_penalty = (1.0 - ks) ** 2
         daily_reward = wy * yield_gain - ww * water_cost - ws * stress_penalty
 
+        # Reward baseline offset (standard RL reward shaping).
+        # Adding a constant to all timesteps does NOT change the optimal policy
+        # or gradient — it only shifts the displayed reward to be more intuitive.
+        daily_reward += 0.5
+
         # Small penalty for trying to irrigate with exhausted budget
         if budget_waste > 1.0:
             daily_reward -= 0.05
