@@ -62,9 +62,9 @@ CROP_PROFILES = {
 # the "moderate" budget forces real trade-offs (roughly 50-60% of
 # unconstrained optimal irrigation).
 WATER_BUDGET_PRESETS = {
-    "cotton":  {"generous": 600, "moderate": 400, "scarce": 250},
-    "wheat":   {"generous": 400, "moderate": 280, "scarce": 180},
-    "maize":   {"generous": 450, "moderate": 300, "scarce": 200},
+    "cotton":  {"generous": 1500, "moderate": 400, "scarce": 250},
+    "wheat":   {"generous": 1000, "moderate": 280, "scarce": 180},
+    "maize":   {"generous": 1000, "moderate": 300, "scarce": 200},
 }
 
 STATE_KEYS = [
@@ -484,7 +484,7 @@ class CropIrrigationEnv(gym.Env):
 
         # Scarcity-adjusted water cost
         scarcity = self._scarcity_cost_multiplier()
-        water_cost = (actual_irr / 45.0) * scarcity
+        water_cost = (actual_irr / 20.0) * scarcity
 
         stress_penalty = (1.0 - ks) ** 2
         daily_reward = wy * yield_gain - ww * water_cost - ws * stress_penalty
@@ -509,7 +509,16 @@ class CropIrrigationEnv(gym.Env):
             gross = final_yield * cp["price_per_kg"]
             total_water_cost = self.cumulative_irrigation * cp["water_cost_per_mm"]
             self.episode_profit = gross - total_water_cost
-            terminal_reward = self.episode_profit / self.terminal_reward_scale
+
+            # IWUE bonus: directly rewards water efficiency (kg yield per mm)
+            # This teaches the agent to minimize water while maintaining yield.
+            if self.cumulative_irrigation > 1.0:
+                iwue = final_yield / self.cumulative_irrigation
+                efficiency_bonus = iwue * 8.0   # scales IWUE to be profit-comparable
+            else:
+                efficiency_bonus = 0.0
+
+            terminal_reward = (self.episode_profit + efficiency_bonus) / self.terminal_reward_scale
 
         reward = daily_reward + terminal_reward
         obs = self._get_obs()
