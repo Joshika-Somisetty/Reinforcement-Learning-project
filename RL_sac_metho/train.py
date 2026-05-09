@@ -109,7 +109,7 @@ def build_env(args, seed_override=None):
         dynamic_reward=not args.fixed_reward,
         terminal_reward_scale=getattr(args, "terminal_reward_scale", 100.0),
         water_budget_mm=getattr(args, "water_budget", None),
-        water_budget_level=getattr(args, "water_budget_level", "moderate"),
+        water_budget_level=getattr(args, "water_budget_level", "generous"),
         weather_source=getattr(args, "weather_source", "synthetic"),
         seed=args.seed if seed_override is None else seed_override,
     )
@@ -614,12 +614,12 @@ def main():
     parser.add_argument("--reservoir",  default=800.0,type=float)
     parser.add_argument("--water-budget", default=None, type=float,
                         help="Hard seasonal irrigation budget in mm")
-    parser.add_argument("--water-budget-level", default="moderate",
+    parser.add_argument("--water-budget-level", default="generous",
                         choices=["generous", "moderate", "scarce"],
                         help="Preset budget used when --water-budget is omitted")
     parser.add_argument("--weather-source", default="synthetic",
                         choices=["synthetic", "real"])
-    parser.add_argument("--terminal-reward-scale", default=100.0, type=float,
+    parser.add_argument("--terminal-reward-scale", default=25.0, type=float,
                         help="Scale terminal profit before adding it to the RL reward")
     parser.add_argument("--eval-every", default=50,   type=int)
     parser.add_argument("--eval-episodes", default=20, type=int)
