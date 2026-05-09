@@ -8,6 +8,7 @@ Run:
 """
 
 import argparse
+import gc
 import csv
 import json
 import random
@@ -536,6 +537,12 @@ def run_ablation(args):
             )
             metrics["seed"] = seed
             seed_metrics.append(metrics)
+
+            # Free GPU memory between runs to prevent CUDA OOM
+            del agent, history, eval_env
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         aggregate = {}
         metric_keys = [
