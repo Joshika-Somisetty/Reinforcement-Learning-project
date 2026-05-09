@@ -29,7 +29,7 @@ CROP_PROFILES = {
         wp=0.15,
         root_depth_mm=1200,
         price_per_kg=0.22,
-        water_cost_per_mm=0.12,
+        water_cost_per_mm=0.55,
         base_temp_c=14.0,
         lai_max=5.5,
     ),
@@ -41,7 +41,7 @@ CROP_PROFILES = {
         wp=0.12,                    # wilting point
         root_depth_mm=600,          # effective rooting depth
         price_per_kg=0.25,          # USD / kg
-        water_cost_per_mm=0.10,     # USD / mm applied
+        water_cost_per_mm=0.45,     # USD / mm applied
         base_temp_c=5.0,
         lai_max=6.0,
     ),
@@ -52,7 +52,7 @@ CROP_PROFILES = {
         fc=0.32, wp=0.11,
         root_depth_mm=700,
         price_per_kg=0.18,
-        water_cost_per_mm=0.10,
+        water_cost_per_mm=0.45,
         base_temp_c=10.0,
         lai_max=6.5,
     ),
@@ -110,7 +110,7 @@ class CropIrrigationEnv(gym.Env):
         dynamic_reward: bool = True,
         terminal_reward_scale: float = 25.0,
         water_budget_mm: Optional[float] = None,
-        water_budget_level: str = "moderate",
+        water_budget_level: str = "generous",
         weather_source: str = "synthetic",   # "synthetic" | "real"
         seed: Optional[int] = None,
         render_mode=None,
