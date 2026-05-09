@@ -514,6 +514,9 @@ def run_ablation(args):
             variant_args.water_budget_level = "moderate"
             if args.water_budget is None:
                 variant_args.water_budget = 400.0 if args.crop == "cotton" else None
+            # Reduce memory footprint for ablation runs
+            variant_args.buffer_size = 100_000
+            variant_args.amp = True
             for key, value in overrides.items():
                 setattr(variant_args, key, value)
 
