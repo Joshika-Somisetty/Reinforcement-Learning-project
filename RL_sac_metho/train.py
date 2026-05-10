@@ -664,11 +664,11 @@ def main():
     parser.add_argument("--algorithm-baseline-episodes", default=80, type=int)
     parser.add_argument("--algorithm-baseline-warmup", default=500, type=int)
     parser.add_argument("--run-ablation", action="store_true")
-    parser.add_argument("--ablation-episodes", default=300, type=int)
+    parser.add_argument("--ablation-episodes", default=500, type=int)
     parser.add_argument("--ablation-warmup", default=1000, type=int)
     parser.add_argument("--ablation-eval-every", default=30, type=int)
     parser.add_argument("--ablation-eval-episodes", default=20, type=int)
-    parser.add_argument("--ablation-seeds", default="42,43,44",
+    parser.add_argument("--ablation-seeds", default="42",
                         help="Comma-separated seeds for multi-seed ablation")
     args = parser.parse_args()
 
