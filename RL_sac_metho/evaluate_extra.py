@@ -30,7 +30,7 @@ PLOTS   = "results/plots"
 Path(RESULTS).mkdir(exist_ok=True)
 Path(PLOTS).mkdir(exist_ok=True)
 
-def load_agent(obs_dim, lstm_hidden=256, seq_len=7, encoder="tsa"):
+def load_agent(obs_dim, lstm_hidden=64, seq_len=7, encoder="tsa"):
     """Load trained agent from checkpoint."""
     agent = SACAgent(obs_dim=obs_dim, action_dim=1, lstm_hidden=lstm_hidden,
                      seq_len=seq_len, encoder_type=encoder, lr=3e-4)
