@@ -1,0 +1,34 @@
+{
+  "Trained (arid, generous)": {
+    "profit_mean": 1201.2573959414165,
+    "profit_std": 5.042705059508993,
+    "yield_mean": 7600.0,
+    "irrigation_mean": 855.8956437428792,
+    "iwue_mean": 8.8806046189383,
+    "stress_days_mean": 46.03333333333333
+  },
+  "Best: humid, generous": {
+    "profit_mean": 999.7540044020205,
+    "profit_std": 19.692991082653172,
+    "yield_mean": 5874.668207312438,
+    "irrigation_mean": 532.1327294667561,
+    "iwue_mean": 11.047791370975396,
+    "stress_days_mean": 0.0
+  },
+  "Avg: semi-arid, moderate": {
+    "profit_mean": 859.7334732804774,
+    "profit_std": 60.095364910927394,
+    "yield_mean": 4907.879424002171,
+    "irrigation_mean": 400.0,
+    "iwue_mean": 12.269698560005423,
+    "stress_days_mean": 77.46666666666667
+  },
+  "Worst: arid, scarce": {
+    "profit_mean": 587.5498263886324,
+    "profit_std": 16.14633905728707,
+    "yield_mean": 3295.6810290392377,
+    "irrigation_mean": 250.0,
+    "iwue_mean": 13.182724116156953,
+    "stress_days_mean": 117.33333333333333
+  }
+}
