@@ -22,7 +22,7 @@ st.set_page_config(
 # ── Custom CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main-header {font-size:2.5rem; font-weight:800; color:#2E7D32;
+    .main-header {font-size:3.2rem; font-weight:800; color:#2E7D32;
                   text-align:center; margin-bottom:0.5rem;}
     .sub-header  {font-size:1.1rem; color:#555; text-align:center;
                   margin-bottom:2rem;}
@@ -53,23 +53,24 @@ unseen   = load_json("results/unseen_environment_analysis.json")
 hp_data  = load_json("results/hyperparameter_analysis.json")
 
 # ── Sidebar ──────────────────────────────────────────────────────────
-st.sidebar.image("https://img.icons8.com/color/96/irrigation.png", width=80)
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", [
-    "🏠 Home",
-    "📊 Training Results",
-    "🏆 Policy Comparison",
-    "🔬 Ablation Study",
-    "🌍 Unseen Environments",
-    "⚙️ Hyperparameters",
-    "🎮 Live Simulation",
-    "🏗️ Architecture",
+    "Home",
+    "Training Results",
+    "Policy Comparison",
+    "Ablation Study",
+    "Unseen Environments",
+    "Hyperparameters",
+    "Environment",
+    "Live Simulation",
+    "Architecture",
 ])
 
 # ══════════════════════════════════════════════════════════════════════
 #  HOME
 # ══════════════════════════════════════════════════════════════════════
-if page == "🏠 Home":
+# ══════════════════════════════════════════════════════════════════════
+if page == "Home":
     st.markdown('<p class="main-header">🌾 Smart Irrigation with TSA-SAC</p>',
                 unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Deep Reinforcement Learning for Water-Efficient'
@@ -115,7 +116,7 @@ if page == "🏠 Home":
 # ══════════════════════════════════════════════════════════════════════
 #  TRAINING RESULTS
 # ══════════════════════════════════════════════════════════════════════
-elif page == "📊 Training Results":
+elif page == "Training Results":
     st.header("📊 Training Results — 1000 Episodes")
 
     if history:
@@ -180,7 +181,7 @@ elif page == "📊 Training Results":
 # ══════════════════════════════════════════════════════════════════════
 #  POLICY COMPARISON
 # ══════════════════════════════════════════════════════════════════════
-elif page == "🏆 Policy Comparison":
+elif page == "Policy Comparison":
     st.header("🏆 Policy Comparison — TSA-SAC vs Baselines")
 
     if baseline:
@@ -233,7 +234,7 @@ elif page == "🏆 Policy Comparison":
 # ══════════════════════════════════════════════════════════════════════
 #  ABLATION STUDY
 # ══════════════════════════════════════════════════════════════════════
-elif page == "🔬 Ablation Study":
+elif page == "Ablation Study":
     st.header("🔬 Ablation Study — Component Contribution")
 
     st.markdown("""
@@ -292,7 +293,7 @@ elif page == "🔬 Ablation Study":
 # ══════════════════════════════════════════════════════════════════════
 #  LIVE SIMULATION
 # ══════════════════════════════════════════════════════════════════════
-elif page == "🎮 Live Simulation":
+elif page == "Live Simulation":
     st.header("🎮 Live Irrigation Simulation")
     st.markdown("Watch the trained TSA-SAC agent make irrigation decisions in real-time.")
 
@@ -418,7 +419,7 @@ elif page == "🎮 Live Simulation":
 # ══════════════════════════════════════════════════════════════════════
 #  ARCHITECTURE
 # ══════════════════════════════════════════════════════════════════════
-elif page == "🏗️ Architecture":
+elif page == "Architecture":
     st.header("🏗️ System Architecture")
 
     st.subheader("High-Level Architecture")
@@ -492,7 +493,7 @@ elif page == "🏗️ Architecture":
 # ══════════════════════════════════════════════════════════════════════
 #  UNSEEN ENVIRONMENTS
 # ══════════════════════════════════════════════════════════════════════
-elif page == "🌍 Unseen Environments":
+elif page == "Unseen Environments":
     st.header("🌍 Generalization — Unseen Environments")
     st.markdown("Testing the trained agent (arid climate) on environments it was **never trained on**.")
 
@@ -526,7 +527,7 @@ elif page == "🌍 Unseen Environments":
 # ══════════════════════════════════════════════════════════════════════
 #  HYPERPARAMETERS
 # ══════════════════════════════════════════════════════════════════════
-elif page == "⚙️ Hyperparameters":
+elif page == "Hyperparameters":
     st.header("⚙️ Hyperparameter Sensitivity Analysis")
     st.markdown("Testing how key hyperparameters affect agent performance (100-episode short runs).")
 
@@ -554,6 +555,93 @@ elif page == "⚙️ Hyperparameters":
         """)
     else:
         st.warning("Run `python evaluate_extra.py` first to generate hyperparameter results.")
+# ══════════════════════════════════════════════════════════════════════
+#  ENVIRONMENT
+# ══════════════════════════════════════════════════════════════════════
+elif page == "Environment":
+    st.header("Environment — CropIrrigationEnv")
+    st.markdown("A custom Gymnasium environment implementing physics-based crop irrigation simulation.")
+
+    st.subheader("Overview")
+    st.markdown("""
+    The environment simulates a **170-day cotton growing season** with:
+    - **FAO-56 Soil Water Balance** — tracks root-zone moisture, drainage, and stress
+    - **RUE Crop Growth Model** — temperature & radiation-driven biomass accumulation
+    - **Stochastic Weather** — Markov chain rainfall + sinusoidal temperature
+    - **Seasonal Water Budget** — non-linear scarcity pricing as budget depletes
+    """)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("State Space (16-dim)")
+        import pandas as pd
+        state_df = pd.DataFrame({
+            "Index": list(range(16)),
+            "Variable": [
+                "LAI (normalized)", "Biomass / max yield", "Root depth / max",
+                "Available soil water", "Reservoir level", "Water stress (1-Ks)",
+                "ET₀ / 12mm", "Today's rain / 30mm", "3-day rain forecast",
+                "3-day ET₀ forecast", "Stage: Emergence", "Stage: Vegetative",
+                "Stage: Flowering", "Stage: Boll Fill", "Stage: Maturity",
+                "Budget remaining"
+            ],
+            "Range": ["[0,1]"]*16
+        })
+        st.dataframe(state_df, use_container_width=True, hide_index=True)
+
+    with col2:
+        st.subheader("Action & Reward")
+        st.markdown("""
+        **Action:** Continuous irrigation ∈ [0, 60] mm/day
+
+        **Daily Reward:**
+        ```
+        r = w_y·yield_gain − w_w·water_cost·scarcity − w_s·(1−Ks)²
+        ```
+
+        **Terminal Reward (harvest):**
+        ```
+        r_T = (yield×price − irrigation×cost + IWUE_bonus) / scale
+        ```
+
+        **Dynamic Weights by Stage:**
+
+        | Stage | Yield (w_y) | Water (w_w) | Stress (w_s) |
+        |---|---|---|---|
+        | Emergence | 0.8 | 0.4 | 0.8 |
+        | Vegetative | 1.0 | 0.3 | 1.0 |
+        | Flowering | 1.2 | 0.2 | 1.8 |
+        | Boll Fill | 0.6 | 0.5 | 0.6 |
+        | Maturity | 0.2 | 0.8 | 0.3 |
+        """)
+
+    st.subheader("Crop Profiles")
+    crop_df = pd.DataFrame({
+        "Parameter": ["Season (days)", "Max Yield (kg/ha)", "Kc_ini", "Kc_mid", "Kc_end",
+                       "Field Capacity", "Wilting Point", "Root Depth (mm)", "Price ($/kg)", "Water Cost ($/mm)"],
+        "Cotton": [170, 7600, 0.35, 1.15, 0.70, 0.33, 0.15, 1200, 0.22, 0.55],
+        "Wheat": [120, 6000, 0.40, 1.15, 0.40, 0.35, 0.12, 600, 0.25, 0.45],
+        "Maize": [100, 9000, 0.30, 1.20, 0.60, 0.32, 0.11, 700, 0.18, 0.45],
+    })
+    st.dataframe(crop_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Water Budget Presets (mm)")
+    budget_df = pd.DataFrame({
+        "Crop": ["Cotton", "Wheat", "Maize"],
+        "Generous": [1500, 1000, 1000],
+        "Moderate": [400, 280, 300],
+        "Scarce": [250, 180, 200],
+    })
+    st.dataframe(budget_df, use_container_width=True, hide_index=True)
+
+    st.subheader("Climate Presets")
+    climate_df = pd.DataFrame({
+        "Parameter": ["Rain Probability", "Rain Mean (mm)", "Temp Mean (°C)", "Solar Mean", "Wind Mean"],
+        "Arid": [0.05, 3, 34, 25, 3.4],
+        "Semi-Arid": [0.15, 6, 28, 22, 2.8],
+        "Humid": [0.40, 10, 24, 18, 2.2],
+    })
+    st.dataframe(climate_df, use_container_width=True, hide_index=True)
 
 # ── Footer ───────────────────────────────────────────────────────────
 st.sidebar.markdown("---")
