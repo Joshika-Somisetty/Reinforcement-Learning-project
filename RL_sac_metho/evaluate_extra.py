@@ -30,9 +30,9 @@ PLOTS   = "results/plots"
 Path(RESULTS).mkdir(exist_ok=True)
 Path(PLOTS).mkdir(exist_ok=True)
 
-def load_agent(obs_dim, hidden=256, seq_len=7, encoder="tsa"):
+def load_agent(obs_dim, lstm_hidden=256, seq_len=7, encoder="tsa"):
     """Load trained agent from checkpoint."""
-    agent = SACAgent(obs_dim=obs_dim, act_dim=1, hidden=hidden,
+    agent = SACAgent(obs_dim=obs_dim, action_dim=1, lstm_hidden=lstm_hidden,
                      seq_len=seq_len, encoder_type=encoder, lr=3e-4)
     agent.load(CKPT)
     return agent
@@ -146,7 +146,7 @@ def run_hyperparameter_analysis():
         reservoir=2000, seed=42,
         episodes=100, warmup=500, eval_every=50, eval_episodes=10,
         batch_size=64, lr=3e-4, gamma=0.99, tau=0.005,
-        hidden=256, lstm_hidden=64, lstm_layers=2,
+        lstm_hidden=64, lstm_layers=2,
         seq_len=7, encoder_type="tsa", fixed_reward=False,
         algorithm="sac", buffer_size=100000, amp=True,
         cuda=torch.cuda.is_available(),
@@ -155,6 +155,10 @@ def run_hyperparameter_analysis():
         transfer_from=None, freeze_encoder_epochs=0,
         compare_episodes=10, model=None, eval_only=False,
         run_ablation=False,
+        update_every=2, gradient_steps=1,
+        terminal_reward_scale=25.0,
+        alpha_min=0.02, alpha_max=0.5,
+        critic_loss="huber",
     )
 
     experiments = {
@@ -163,10 +167,10 @@ def run_hyperparameter_analysis():
             "values": [1e-4, 3e-4, 1e-3],
             "labels": ["1e-4", "3e-4 (default)", "1e-3"],
         },
-        "Hidden Size": {
-            "param": "hidden",
-            "values": [128, 256, 512],
-            "labels": ["128", "256 (default)", "512"],
+        "LSTM Hidden Size": {
+            "param": "lstm_hidden",
+            "values": [32, 64, 128],
+            "labels": ["32", "64 (default)", "128"],
         },
         "Sequence Length": {
             "param": "seq_len",
