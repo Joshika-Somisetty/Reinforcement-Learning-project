@@ -52,16 +52,16 @@ def run_unseen_env_test():
     print("="*70)
 
     scenarios = {
-        "Trained (arid, generous)": dict(climate="arid", water_budget_level="generous", reservoir_capacity=2000),
-        "Best: humid, generous":    dict(climate="humid", water_budget_level="generous", reservoir_capacity=2000),
-        "Avg: semi-arid, moderate": dict(climate="semi_arid", water_budget_level="moderate", reservoir_capacity=1000),
-        "Worst: arid, scarce":      dict(climate="arid", water_budget_level="scarce", reservoir_capacity=500),
+        "Trained (arid, generous)": dict(climate="arid", water_budget_level="generous", reservoir_capacity_mm=2000),
+        "Best: humid, generous":    dict(climate="humid", water_budget_level="generous", reservoir_capacity_mm=2000),
+        "Avg: semi-arid, moderate": dict(climate="semi_arid", water_budget_level="moderate", reservoir_capacity_mm=1000),
+        "Worst: arid, scarce":      dict(climate="arid", water_budget_level="scarce", reservoir_capacity_mm=500),
     }
 
     # Build agent from trained env
     ref_env = CropIrrigationEnv(crop="cotton", climate="arid",
                                 water_budget_level="generous",
-                                reservoir_capacity=2000,
+                                reservoir_capacity_mm=2000,
                                 weather_source="synthetic")
     obs_dim = ref_env.observation_space.shape[0]
     agent = load_agent(obs_dim)
@@ -199,7 +199,7 @@ def run_hyperparameter_analysis():
                 eval_env = CropIrrigationEnv(
                     crop="cotton", climate="arid", weather_source="synthetic",
                     water_budget_level="moderate",
-                    reservoir_capacity=2000)
+                    reservoir_capacity_mm=2000)
                 metrics = eval_on_env(agent, eval_env, n_episodes=10,
                                       seq_len=args.seq_len)
 
